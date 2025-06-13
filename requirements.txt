@@ -1,0 +1,18 @@
+#need python version 3.9 for one of the dependencies but I forget which one
+flask
+python-dotenv
+duckduckgo_search==6.3.5
+flask_cors
+flask_sqlalchemy
+flask_login
+flask_wtf
+Flask-JWT_Extended
+mistralai>=0.0.10
+PyJWT
+bs4
+typing
+datetime
+argparse
+requests
+supabase
+
