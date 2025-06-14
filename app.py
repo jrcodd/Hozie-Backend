@@ -102,7 +102,7 @@ def chat():
     if not user_id:
         print("Chat request rejected: Authentication failed")
         return jsonify({
-            'reply': 'Yo make sure you verify your email. I want to make sure I\'m talking to a real person.',
+            'reply': 'I got an authentication error. Make sure your email is verified. If it is then try logging in again bro.',
             'error': 'Authentication required'
         }), 200
     
