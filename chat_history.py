@@ -1,8 +1,7 @@
 from __future__ import annotations
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
-import json
-import os
+
 
 class ChatHistory:
     """
@@ -57,5 +56,8 @@ class ChatHistory:
     def __len__(self) -> int:
         """
         Get the number of messages in history.
+
+        Returns:
+            int: The number of messages in history.
         """
         return len(self.messages)

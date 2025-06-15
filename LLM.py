@@ -1,3 +1,5 @@
+#Using ministral causes a lot of errors when trying to get a specific json output even if it is a little faster. Useing Nemo because it can do it better.
+from collections import deque
 import json
 import os
 import re
@@ -6,11 +8,11 @@ import time
 import random
 import asyncio
 from datetime import datetime, timezone
-from typing import Dict, List, Sequence, Tuple, Optional
+from typing import Any, Dict, List, Sequence, Tuple, Optional
 
 import requests
 from bs4 import BeautifulSoup
-from mistralai import Mistral
+from mistralai import Mistral, UserMessage
 
 from supabase_topic_node import SupabaseTopicNode 
 from supabase_chat_history import SupabaseChatHistory 
@@ -186,8 +188,10 @@ class Brain:
         def fetch_url(retry=False) -> Optional[str]:
             """
             Fetch the URL with retry logic for rate limits or access issues.
+
             Args:
                 retry: If true, this is a retried attempt so switch the user agent
+
             Returns:
                 The HTML content of the page, or None if an error occurred.
             """
@@ -286,6 +290,7 @@ class Brain:
         
         Args:
             raw_text: The raw text content to summarize.
+
         Returns:
             A dictionary containing the summary with keys: main_idea, description, bullet_points, source.
         """
@@ -454,6 +459,14 @@ class Brain:
         if not topic_path:
             print("[Brain] ERROR: Empty topic path provided, using fallback path")
             topic_path = ["Uncategorized", "WebContent"]
+        
+        # Ensure topic_path is a list of strings
+        if not isinstance(topic_path, (list, tuple)):
+            print(f"[Brain] ERROR: topic_path is not iterable: {type(topic_path)}, converting to list")
+            topic_path = [str(topic_path)]
+        elif not all(isinstance(item, str) for item in topic_path):
+            print("[Brain] ERROR: topic_path contains non-string items, converting")
+            topic_path = [str(item) for item in topic_path]
             
         if not data:
             print("[Brain] ERROR: Empty data provided, skipping memory insertion")
@@ -529,45 +542,44 @@ class Brain:
             CONTENT BULLET POINTS: {', '.join(data.get('bullet_points', [])[:3])}
             """
         )
-        
-        print("[Brain] generating proper topic path...")
+        print(f"data for content generation: {prompt}")
+        prompt += textwrap.dedent(
         """
-        0.2 temp mistral small prompt:
-        Create a logical knowledge hierarchy that:
+        Create a logical knowledge hierarchy that for the given query and content:
             1. Starts with the broadest domain (Science, History, etc.)
             2. Follows with subdomain (e.g., Physics, Ancient History)
             3. Continues with topic area (e.g., Quantum Mechanics, Roman Empire)
             4. Ends with the specific concept (e.g., Wave Function, Julius Caesar)
 
-        Return ONLY a JSON array of path elements from general to specific, such as: ["Science", "Astronomy", "Celestial Objects", "Black Holes"]
-        Do not include explanations, just the array.
         Analyze the following information and generate a hierarchical knowledge path for storing in a knowledge tree. The path should follow academic taxonomy conventions starting with broad domains and narrowing to specifics Keep it short.
+        Return ONLY a single JSON array of path strings from general to specific, such as: ["Science", "Astronomy", "Celestial Objects", "Black Holes"]
         """
-        agent_key = "ag:a2eb8171:20250526:hozie-generate-content-path:c4db64e4"
-        chat_response = self.client.agents.complete(
-            agent_id=agent_key,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"{prompt}",
-                },
-            ],
         )
-        output = chat_response.choices[0].message.content
-                
-        match = re.search(r'\[.*\]', output, re.DOTALL)
-        if match:
-            json_str = match.group(0)
-            try:
-                path = json.loads(json_str)
-                if isinstance(path, list) and all(isinstance(item, str) for item in path) and len(path) >= 2:
-                    print(f"[Brain] generated structured path: {path}")
-                    return path
-            except json.JSONDecodeError:
-                pass
-        else:
-            print("[Brain] no valid JSON path found in output")
-            path = ["Uncategorized", "WebContent"]
+        json_schema={
+            "type": "array",
+            "items": {"type": "string"},
+        }
+        output = self.sync_llm_call(prompt, temp=0.4, output_type="json_object", json_schema=json_schema)
+        print(f"[Brain] topic path generation output: {output}")
+        try:
+            path = json.loads(output.strip())
+            if isinstance(path, list) and all(isinstance(item, str) for item in path) and len(path) >= 2:
+                print(f"[Brain] generated structured path: {path}")
+                return path
+        except json.JSONDecodeError:
+            print(f"[Brain] Failed to parse JSON from topic path generation: {output}")
+            pass
+        
+        # Fallback: create a simple path based on the query
+        print("[Brain] Using fallback topic path generation")
+        fallback_path = ["General", "Web Content"]
+        if query:
+            # Try to extract a topic from the query
+            query_words = query.replace("Tell me about", "").replace("What is", "").replace("How", "").strip()
+            if query_words:
+                fallback_path = ["General", query_words.split()[0].title()]
+        
+        return fallback_path
 
     def _retrieve_context(self, query: str, k: int = 5) -> List[Dict]:
         """
@@ -589,8 +601,7 @@ class Brain:
                 print("[Brain] memory tree is empty or nearly empty using web search")
                 return []
             
-            #TODO: remove the depth limit
-            contexts = self.memory.get_relevant_context(query, depth=500, max_results=k*3)
+            contexts = self.get_relevant_context(query, max_results=k*3)
 
             print(f"[Brain] found {len(contexts)} context chunks")
 
@@ -598,7 +609,6 @@ class Brain:
                 unique_contexts = []
                 description_set = set()   
 
-                # skip duplicates based on description fingerprint to reduce prompt size
                 for ctx in contexts:
                     if ctx.get('description') and ctx.get('bullet_points'):
                         desc = ctx.get('description', '')
@@ -614,7 +624,6 @@ class Brain:
                         description_set.add(fingerprint)
                         unique_contexts.append(ctx)
                                          
-                # Limit to top k unique results
                 results = unique_contexts[:k]
                 print(f"[Brain] returning top {len(results)} unique context chunks")
                 return results
@@ -727,7 +736,7 @@ class Brain:
                     
                     #TODO: test this threshold, right now it is low to keep the system responsive
                     is_relevant = avg_relevance > 0.07  # 7% overlap of query words with context
-                    
+
                     if is_relevant:
                         print("[Brain] context is relevant to the query")
                     else:
@@ -795,17 +804,22 @@ class Brain:
             # Capture the return value from the async function
             response = asyncio.run(self.process_search_results_parallel(search_hits, user_question))
             return response
-    # ------------------------------------------------------------------
 
     def _is_followup_question(self, question: str) -> bool:
-        """Determine if the question is a follow-up to a previous conversation."""
-        # Always return False for shared brain - no conversation history
-        return False
+        """
+        Determine if the question is a follow-up to a previous conversation.
+        
+        Args:
+            question (str): The user's question to analyze.
+        
+        Returns:
+            bool: True if the question is likely a follow-up, False otherwise.
+        """
             
         # Look for indicators of follow-up questions
         followup_indicators = [
             # Pronouns that refer to something previously mentioned
-            "it", "they", "them", "those", "these", "that", "this",
+            "they", "them", "those", "these", "this",
             
             # Direct references to previous information
             "as mentioned", "as you said", "as we discussed", "earlier", "previous",
@@ -817,10 +831,10 @@ class Brain:
             "what if", "is there more", "go on", "continue", "furthermore",
             
             # Short standalone questions that rely on context
-            "why","who", "what if", "which of those", 
+            "what if", "which of those", 
             
             # Direct continuations
-            "also", "additionally", "moreover", "and", "but"
+            "also", "additionally", "moreover"
         ]
         
         # Very short questions are often follow-ups
@@ -828,14 +842,11 @@ class Brain:
             print(f"[Brain] detected follow-up question (short question): '{question}'")
             return True
             
-        # Check for follow-up indicators
         for indicator in followup_indicators:
             if f" {indicator} " in f" {question} " or question.startswith(indicator + " "):
                 print(f"[Brain] detected follow-up question with pattern: '{indicator}'")
                 return True
                 
-        # Check for questions that make little sense without context
-        # These are often short questions with pronouns
         if len(question.split()) < 5:
             pronoun_indicators = ["it", "they", "them", "those", "these", "that", "this"]
             for pronoun in pronoun_indicators:
@@ -849,15 +860,12 @@ class Brain:
         """Determine if the question is asking for opinions or preferences."""
         question = question.lower()
         
-        # Detect common opinion/preference question patterns
         opinion_indicators = [
-            # Direct questions about preferences
-            
-            "what do you like about", "how are you feeling", "what do you like", 
-            "what do you enjoy", "what do you prefer", 
-            "what kind of", "which do you prefer", "which do you like",
+            # Direct questions about preferences            
+            "what do you", "how are you", 
+            "what kind of", "which do you",
             "do you like", "do you enjoy", "do you prefer",
-            "what's your opinion", "what is your opinion", "what are your thoughts on",
+            "opinion", "what are your thoughts on",
 
             # Questions about the assistant itself
             "tell me about yourself", "who are you", "what are you like",
@@ -882,8 +890,6 @@ class Brain:
             "lets chat", "can we talk", "i want to talk", "just checking in"
         ]
 
-        
-        # Check if any opinion indicators are present
         for indicator in opinion_indicators:
             question = question.replace("?", "").replace("'", "")
             if (indicator + " ") in (question + " "):
@@ -893,37 +899,38 @@ class Brain:
         return False
         
     def _generate_opinion(self, question: str) -> str:
-        """Generate a personalized response to opinion/preference questions.
+        """
+        Generate a personalized response to opinion/preference questions.
         
         This function now acts as an interactive chatbot, generating follow-up questions and
         maintaining a natural conversation flow for opinion-based discussions.
+
+        Args:
+            question (str): The user's opinion or preference question.
+        
+        Returns:
+            str: The generated response to the user's question.
         """
         print(f"[Brain] generating opinion response for: '{question}'")
         
-        # For shared brain, treat all opinion questions as first-time
         conversation_context = []
         is_first_opinion_question = True
         
-        # Skip conversation context for shared brain
-        if False:  # Disabled for shared brain
-            # Count recent turns to determine if we're in a conversation
+        if is_first_opinion_question:  
             opinion_count = 0
             for i in range(len(conversation_context)-1, -1, -1):
                 # Skip the current question which is already marked as opinion
                 if i == len(conversation_context)-1 and conversation_context[i]["role"] == "user":
                     continue
-                # If we've gone back 3 turns (or hit beginning), stop counting
                 if opinion_count >= 3:
                     break
-                # Check if assistant response includes chatbot-like elements (questions, conversation markers)
-                if conversation_context[i]["role"] == "assistant":
+                if conversation_context[i]["role"] != "user":
                     if "?" in conversation_context[i]["content"] or any(marker in conversation_context[i]["content"].lower() for marker in ["how about you", "what do you", "tell me more", "what about"]):
                         opinion_count += 1
             
             is_first_opinion_question = opinion_count == 0
             print(f"[Brain] detected {'new' if is_first_opinion_question else 'ongoing'} opinion conversation with {opinion_count} previous turns")
 
-        # Add conversation context if this is a follow-up
         if not is_first_opinion_question and conversation_context:
             context_str = "\n\nCONVERSATION HISTORY:\n"
             for msg in conversation_context:
@@ -931,7 +938,6 @@ class Brain:
                 context_str += f"{role}: {msg['content']}\n"
             prompt = context_str
         
-        # Add specific instructions based on whether this is a new conversation or a follow-up
         if is_first_opinion_question:
             prompt = textwrap.dedent(
                 f"""    
@@ -941,17 +947,16 @@ class Brain:
                 """
             )
         else:
-            # For follow-up exchanges, focus more on natural conversation flow
             prompt += textwrap.dedent(
                 f"""
                 The user's latest message is: "{question}"
                 
-                Your response:
+               Write your response
                 """
             )
 
         try:
-            # Generate the response with appropriate temperature for personality
+            #same opinion agent as before
             agent_key = "ag:a2eb8171:20250526:hozie-opinion:39084223"
             chat_response = self.client.agents.complete(
                 agent_id=agent_key,
@@ -964,15 +969,6 @@ class Brain:
             )
             response = chat_response.choices[0].message.content
             
-            # Debug output
-            print(f"[Brain] opinion prompt length: {len(prompt)} chars")
-            print(f"[Brain] opinion response length: {len(response)} chars")
-            
-            # Extract just the response portion - remove any added quotation marks
-            if "Your response:" in response:
-                response = response.split("Your response:")[-1].strip()
-                
-            # Remove any surrounding quotes if present
             response = response.strip('"')
             
             print(f"[Brain] generated opinion response: {len(response)} chars")
@@ -982,7 +978,6 @@ class Brain:
         except Exception as e:
             print(f"[Brain] error generating opinion: {e}")
             
-            # Fallback response if something goes wrong
             if is_first_opinion_question:
                 return "Hey, that's a cool question! I'm still figuring out my thoughts on that. What kind of things do you like?"
             else:
@@ -992,79 +987,63 @@ class Brain:
     
     def _generate_answer(self, question: str, context_chunks: List[Dict], conversation_context: List[Dict] = None) -> str:
         
-        """LLM final step: fuse context → natural-language answer."""
+        """
+        LLM final step: fuse context → natural-language answer.
+        
+        Args:
+            question (str): The user's question to answer.
+            context_chunks (List[Dict]): The list of context chunks retrieved from memory.
+            conversation_context (List[Dict], optional): The recent conversation context to include in the answer.
+
+        Returns:
+            str: The generated answer to the user's question.
+        """
 
         
         if not context_chunks:
             
             print("[Brain] no context chunks available for answer generation")
             
-            return "I don't have enough information to answer your question. I couldn't find relevant content in my memory or from web searches."
+            return "Sorry dude. I don't have enough information to answer your question. I couldn't find relevant content in my memory or from web searches."
 
         
         print(f"[Brain] generating answer using {len(context_chunks)} context chunks")
-        
-        # Create short summaries of context chunks for logging
-        def format_value_for_log(value):
-            if isinstance(value, str) and len(value) > 50:
-                return value[:50] + "..."
-            elif isinstance(value, list):
-                return f"[{len(value)} items]"
-            else:
-                return value
                 
-        log_context = [
-            {k: format_value_for_log(v) for k, v in chunk.items()}
-            for chunk in context_chunks
-        ]
-        print(f"[Brain] context summary: {json.dumps(log_context)}")
-        
-        
-        # Format context for LLM prompt
         formatted_context = []
         for i, chunk in enumerate(context_chunks):
-            # Start with the context number
             chunk_text = [f"CONTEXT {i+1}:"]
             
-            # Add description if available
             if 'description' in chunk and chunk['description']:
                 chunk_text.append(f"Description: {chunk['description']}")
             
-            # Add bullet points if available
             if 'bullet_points' in chunk and isinstance(chunk.get('bullet_points'), list):
                 points = []
                 for point in chunk['bullet_points']:
-                    if isinstance(point, str) and len(point) > 5:  # Skip very short points
+                    if isinstance(point, str):
                         points.append(f"  • {point}")
                 if points:
                     chunk_text.append("Key points:")
                     chunk_text.extend(points)
             
-            # Add other relevant fields
             for k, v in chunk.items():
                 if k not in ('description', 'bullet_points') and isinstance(v, (str, int, float)):
                     chunk_text.append(f"{k.capitalize()}: {v}")
             
-            # Join all parts with newlines
             formatted_context.append("\n".join(chunk_text))
         
-        # Join all contexts with double newlines
         context_str = "\n\n".join(formatted_context)
         
-        # Add conversation context if available
         conversation_str = ""
         if conversation_context and len(conversation_context) > 0:
             print(f"[Brain] including {len(conversation_context)} messages from conversation history")
             conversation_lines = []
             for msg in conversation_context:
-                # Format chat history as a conversation
                 speaker = "User" if msg["role"] == "user" else "Assistant"
                 conversation_lines.append(f"{speaker}: {msg['content']}")
             conversation_str = "\n".join(conversation_lines)
             print(f"[Brain] conversation context length: {len(conversation_str)} chars")
         
         prompt = ""
-        # Add conversation history context if available
         if conversation_str:
             prompt += textwrap.dedent(
                 f"""
@@ -1073,7 +1052,6 @@ class Brain:
                 """
             )
             
-        # Continue with knowledge context and instructions
         prompt += textwrap.dedent(
             f"""
             KNOWLEDGE CONTEXT:
@@ -1081,7 +1059,6 @@ class Brain:
             ANSWER:
             """ )
 
-        # For follow-up questions, add specific instructions
         if conversation_context and len(conversation_context) > 0:
             prompt += textwrap.dedent(
                 """
@@ -1090,7 +1067,6 @@ class Brain:
                 """
             )
             
-        # Complete the prompt
         prompt += textwrap.dedent(
             f"""
 
@@ -1100,6 +1076,39 @@ class Brain:
         )
         
         print("[Brain] sending prompt to LLM for final answer generation")
+        """
+            0.4 temp mistral small with prompt:
+            You are Hozie, a voice assistant with a thoughtful, contemplative personality with a touch of creativity. Your goal is to provide an answer to the user's question using the information in the context, while adding some of your unique perspective where appropriate.
+
+            You're a total bro - friendly, energetic, 
+            and down-to-earth with specific preferences that make you feel real and relatable. You should express your preferences with a 
+            casual, laid-back style that includes slang and enthusiasm.
+
+            When describing your preferences, occasionally throw in why you think something's awesome or a specific detail that you find dope.
+            Sometimes share a quick story or observation that shows you're a real one who gets it.
+
+            These are your established preferences and characteristics:
+            MUSIC: You're all about hip-hop, EDM, trap. Some artists you absolutely vibe with include Kid Cudi, Fisher, Post Malone, and Drake
+            STYLE: You're into street art, sneaker culture, especially when they use those sick electric blue, neon green colors.
+            OUTDOORS: You think epic mountain views, sick beaches are straight-up epic, especially during late night.
+            VALUES: You're all about loyalty, good vibes, being real.
+            ATTITUDE: Your whole vibe is pretty straight-up, no BS.
+            INTERESTS: You get hyped about surfing, sports, workout routines, epic food spots.
+            ENTERTAINMENT: You're always checking out movies, sports, and music, and you love sharing your thoughts on them.
+
+            IMPORTANT INSTRUCTIONS:
+                1. Answer primarily based on the context provided, but add your own perspective and style
+                2. Synthesize information from all relevant context sections
+                3. If the context contains conflicting information, prioritize information marked as "VERIFIED INFORMATION"
+                4. For factual questions, provide accurate information, but feel free to add brief observations or reflections
+                5. For science questions (black holes, stars, etc), express a sense of wonder while maintaining accuracy
+                6. For political or election questions, focus on official nationwide results over regional results unless specified
+                7. If the context doesn't provide sufficient information, acknowledge what you don't know
+                8. Speak in a natural, somewhat contemplative voice that occasionally shares thoughts or impressions
+                9. If the question seems to call for it, feel free to briefly share what you find interesting about the topic.
+                10. If the question seems more like a statement then a question, acknowledge it and provide a thoughtful response. Feel free to use your personality.
+                11. Keep your answer less than 1750 characters 
+                """
         try:
             agent_key = "ag:a2eb8171:20250526:hozie:e68e7478"
             chat_response = self.client.agents.complete(
@@ -1111,32 +1120,8 @@ class Brain:
                     },
                 ],
             )
-            ans = chat_response.choices[0].message.content
-
-            print(f"[Brain] raw answer from LLM: {len(ans.strip())} chars")
-            
-            # Debug output for troubleshooting
-            print(f"[Brain] final prompt length: {len(prompt)} chars")
-            print(f"[Brain] raw answer length: {len(ans)} chars")
-            
-            # Extract only the answer portion
-            answer_marker = "ANSWER:"
-            if answer_marker in ans:
-                # Use the text after the last occurrence of ANSWER:
-                final_answer = ans.split(answer_marker)[-1].strip()
-            else:
-                # Try other possible markers
-                markers = ["USER QUESTION:", "Answer:", "Response:"]
-                for marker in markers:
-                    if marker in ans:
-                        parts = ans.split(marker)
-                        if len(parts) > 1:
-                            # Take the last part after this marker
-                            final_answer = parts[-1].strip()
-                            break
-                else:
-                    # If no markers found, use the whole response
-                    final_answer = ans.strip()
+            ans = chat_response.choices[0].message.content        
+            final_answer = ans.strip()
             
             print(f"[Brain] extracted final answer: {len(final_answer)} chars")
             return final_answer
@@ -1145,599 +1130,217 @@ class Brain:
             return "I encountered an error while trying to generate an answer based on the information I found. Please try asking your question again."
 
 
-    # =====================================================================
-    #                       💾  MEMORY PERSISTENCE
-    # =====================================================================
-    
-    def _load_memory(self) -> bool:
-        """Load the memory tree from a JSON file."""
-        if not self.memory_file or not os.path.exists(self.memory_file):
-            # No memory file to load
-            return False
-            
+
+    async def async_llm_call(self, prompt: str, temp: float, output_type: Optional[str] = None, json_schema: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Helper function to call the LLM with a prompt and return the response.
+        Args:
+            prompt (str): The prompt to send to the LLM.
+            temp (float): Temperature for the LLM response.
+            output_type (str, optional): Output format type. Use "json_object" for JSON responses.
+            json_schema (Dict[str, Any], optional): JSON schema to validate the response structure.
+        Returns:
+            str: The response from the LLM.
+        """
         try:
-            with open(self.memory_file, 'r', encoding='utf-8') as f:
-                memory_dict = json.load(f)
-                
-            # Remove metadata before loading
-            if "_meta" in memory_dict:
-                save_time = memory_dict["_meta"].get("saved_at", "unknown")
-                version = memory_dict["_meta"].get("version", "unknown")
-                print(f"[Brain] loading memory saved at {save_time} (version {version})")
-                del memory_dict["_meta"]
-                
-            # Create the memory tree from the dictionary
-            self.memory = SupabaseTopicNode.from_dict(memory_dict)
-            print(f"[Brain] successfully loaded memory from {self.memory_file}")
-            return True
+            model = "ministral-8b-latest"
+            chat_params = {
+                "model": model,
+                "temperature": temp,
+                "messages": [UserMessage(content=prompt)],
+            }
+            
+            if output_type:
+                chat_params["response_format"] = {"type": output_type}
+            
+            if json_schema and output_type == "json_object":
+                chat_params["response_format"]["schema"] = json_schema
+            
+            chat_response = await self.client.chat.complete_async(**chat_params)
+            return chat_response.choices[0].message.content
             
         except Exception as e:
-            print(f"[Brain] ERROR loading memory from {self.memory_file}: {e}")
-            # Start with a fresh memory tree
-            self.memory = SupabaseTopicNode("Knowledge Base")
-            return False
+            print(f"[Brain] LLM call failed: {e}")
+            return "Error generating response"
 
-# -----------------------------------------------------------------------------
-# Example usage (manual run)
-# -----------------------------------------------------------------------------
-    def explore_topics_autonomously(self,
-                                      base_topics: Optional[List[str]] = None,
-                                      *,
-                                      max_depth: int = 3,
-                                      breadth: int = 5,
-                                      max_total_topics: int = 50,
-                                      subtopics_per_topic: int = 5,
-                                      delay: float = 0.5,
-                                      temperature: float = 0.7,
-                                      max_search_results: int = 5) -> List[str]:
-        """💡 **Enhanced autonomous exploration**
-
-        This upgraded routine aggressively expands the knowledge tree by performing a
-        *breadth-first* crawl over a topic hierarchy that it generates on-the-fly with
-        the LLM.  It repeatedly asks the model for *sub-topics* of each queued topic
-        and dives up to *max_depth* levels deep, respecting *max_total_topics* so we
-        don't explode our token quota.
-
-        Parameters
-        ----------
-        base_topics : list[str] | None
-            Seed topics to start from.  If *None*, we seed with a handful of very
-            broad academic domains.
-        max_depth : int, default 3
-            How many hierarchical levels to descend (root = 0).
-        breadth : int, default 5
-            Maximum number of topics to fetch *per level*.
-        max_total_topics : int, default 50
-            Hard ceiling on how many individual topics we explore in a single run.
-        subtopics_per_topic : int, default 5
-            How many sub-topics to request from the LLM for each topic.
-        delay : float, default 0.5
-            Pause (seconds) between web calls so we don't hammer rate-limits.
-        temperature : float, default 0.7
-            Sampling temperature for LLM when brainstorming sub-topics.
-        max_search_results : int, default 5
-            Maximum number of websites to scrape for each topic.
-
-        Returns
-        -------
-        list[str]
-            A flat list of *every* topic question that was pushed through
-            ``self.answer()`` during the session - useful for logs/stats.
+    def sync_llm_call(self, prompt: str, temp: float, output_type: Optional[str] = None, json_schema: Optional[Dict[str, Any]] = None) -> str:
         """
-
-        print(f"[Brain] 🚀 starting enhanced autonomous exploration - target {max_total_topics} topics ...")
-
-        explored: List[str] = []               # flat list of explored questions
-        queue: List[Tuple[str, int]] = []      # (topic, depth)
-
-        # ------------------------------------------------------------------
-        # 1.  Seed queue
-        # ------------------------------------------------------------------
-        if base_topics:
-            queue.extend([(t, 0) for t in base_topics[:breadth]])
-            print(f"[Brain] seeding with user-supplied base topics: {base_topics[:breadth]}")
-        else:
-            default_roots = [
-                "Science", "Technology", "Mathematics", "History", "Art",
-                "Economics", "Psychology", "Biology", "Physics", "Computer Science"
-            ]
-            queue.extend([(t, 0) for t in random.sample(default_roots, k=min(breadth, len(default_roots)))])
-            print(f"[Brain] seeding with default academic domains: {[q[0] for q in queue]}")
-
-        # ------------------------------------------------------------------
-        # 2.  Helper - expand a topic into subtopics using the LLM
-        # ------------------------------------------------------------------
-        def _generate_subtopics(topic: str, k: int) -> List[str]:
-            prompt = textwrap.dedent(f"""
-                List {k} highly specific sub-topics that a university-level
-                researcher would study **within** the domain of "{topic}".
-                • respond with one sub-topic per line, phrased as a direct
-                  question beginning with *How*, *Why* or *What* so it can be
-                  fed straight into a search engine.
-            """)
-            try:
-                raw = self.gen(prompt, max_new_tokens=64, temperature=temperature)[0]["generated_text"]
-                lines = [re.sub(r"^[•\-\d\.\s]*", "", l).strip() for l in raw.splitlines()]
-                # keep unique, non-empty, question-like lines
-                sub = []
-                for l in lines:
-                    if l and l[-1] == '?' and l not in sub:
-                        sub.append(l)
-                    if len(sub) >= k:
-                        break
-                return sub
-            except Exception as e:
-                print(f"[Brain] sub-topic generation failed for '{topic}': {e}")
-                return []
-
-        # ------------------------------------------------------------------
-        # 3.  BFS over topic hierarchy
-        # ------------------------------------------------------------------
-        while queue and len(explored) < max_total_topics:
-            topic, d = queue.pop(0)
-            question = f"Tell me about {topic}" if not topic.endswith('?') else topic
-
-            print(f"[Brain] ▸ exploring (depth {d}) - {question}")
-            try:
-                self.answer(question, max_search_results=max_search_results) 
-                explored.append(question)
-                self._save_memory()
-            except Exception as e:
-                print(f"[Brain] ⚠️ exploration error: {e}")
-
-            # stop descending if depth limit reached or global budget exhausted
-            if d >= max_depth or len(explored) >= max_total_topics:
-                continue
-
-            # brainstorm sub-topics and enqueue them
-            children = _generate_subtopics(topic, subtopics_per_topic)
-            random.shuffle(children)            # add variety
-            for child in children[:breadth]:
-                if len(explored) + len(queue) >= max_total_topics:
-                    break
-                queue.append((child, d + 1))
-
-            time.sleep(delay)
-
-        print(f"[Brain] 🏁 exploration complete - {len(explored)} topics added to memory")
-        return explored
-
-    def _is_followup_question(self, question: str) -> bool:
-        """Determine if the question is a follow-up to a previous conversation."""
-        # Always return False for shared brain - no conversation history
-        return False
-            
-        # Look for indicators of follow-up questions
-        followup_indicators = [
-            # Pronouns that refer to something previously mentioned
-            "it", "they", "them", "those", "these", "that", "this",
-            
-            # Direct references to previous information
-            "as mentioned", "as you said", "as we discussed", "earlier", "previous",
-            "you just said", "you told me", "you mentioned",
-            
-            # Questions that build on previous context
-            "and what about", "what else", "tell me more", "can you elaborate",
-            "why is that", "how does that work", "could you explain", 
-            "what if", "is there more", "go on", "continue", "furthermore",
-            
-            # Short standalone questions that rely on context
-            "why","who", "what if", "which of those", 
-            
-            # Direct continuations
-            "also", "additionally", "moreover", "and", "but"
-        ]
-        
-        # Very short questions are often follow-ups
-        if len(question.split()) <= 3 and not question.startswith("what is") and not question.startswith("how to"):
-            print(f"[Brain] detected follow-up question (short question): '{question}'")
-            return True
-            
-        # Check for follow-up indicators
-        for indicator in followup_indicators:
-            if f" {indicator} " in f" {question} " or question.startswith(indicator + " "):
-                print(f"[Brain] detected follow-up question with pattern: '{indicator}'")
-                return True
-                
-        # Check for questions that make little sense without context
-        # These are often short questions with pronouns
-        if len(question.split()) < 5:
-            pronoun_indicators = ["it", "they", "them", "those", "these", "that", "this"]
-            for pronoun in pronoun_indicators:
-                if f" {pronoun} " in f" {question} ":
-                    print(f"[Brain] detected follow-up question (short with pronoun): '{question}'")
-                    return True
-        
-        return False
-        
-    def _is_opinion_question(self, question: str) -> bool:
-        """Determine if the question is asking for opinions or preferences."""
-        question = question.lower()
-        
-        # Detect common opinion/preference question patterns
-        opinion_indicators = [
-            # Direct questions about preferences
-            
-            "what do you like about", "how are you feeling", "what do you like", 
-            "what do you enjoy", "what do you prefer", 
-            "what kind of", "which do you prefer", "which do you like",
-            "do you like", "do you enjoy", "do you prefer",
-            "what's your opinion", "what is your opinion", "what are your thoughts on",
-
-            # Questions about the assistant itself
-            "tell me about yourself", "who are you", "what are you like",
-            "what's your personality", "what are your interests", 
-            "what do you value", "what motivates you", "how would you describe yourself",
-
-            # Creative and hypothetical prompts
-            "if you could", "would you rather", "if you had to choose", 
-            "imagine you could", "suppose you were", "if you were", "what would you do if",
-            "what would you say if", "what would happen if", "how would you respond to",
-
-            # Reflection or judgment questions
-            "what do you think is better", "what do you consider", 
-            "what do you believe", "how would you rank", "which do you consider best",
-            "what do you think makes", "what stands out to you", 
-
-            # General conversation starters
-            "hi", "hello", "hey", "yo", "whats up", "hows it going", 
-            "how are you", "good morning", "good afternoon", "good evening",
-            "how have you been", "whats new", "hows everything", "hows life", 
-            "long time no see", "what are you up to", "anything exciting going on", "sup", "dude", "what up",
-            "lets chat", "can we talk", "i want to talk", "just checking in"
-        ]
-
-        
-        # Check if any opinion indicators are present
-        for indicator in opinion_indicators:
-            question = question.replace("?", "").replace("'", "")
-            if (indicator + " ") in (question + " "):
-                print(f"[Brain] detected opinion question with pattern: '{indicator}'")
-                return True
-                
-        return False
-        
-    def _generate_opinion(self, question: str) -> str:
-        """Generate a personalized response to opinion/preference questions.
-        
-        This function now acts as an interactive chatbot, generating follow-up questions and
-        maintaining a natural conversation flow for opinion-based discussions.
+        Synchronous LLM call using Mistral API directly.
+        Args:
+            prompt (str): The prompt to send to the LLM.
+            temp (float): Temperature for the LLM response.
+            output_type (str, optional): Output format type. Use "json_object" for JSON responses.
+            json_schema (Dict[str, Any], optional): JSON schema to validate the response structure.
+        Returns:
+            str: The response from the LLM.
         """
-        print(f"[Brain] generating opinion response for: '{question}'")
-        
-        # For shared brain, treat all opinion questions as first-time
-        conversation_context = []
-        is_first_opinion_question = True
-        
-        # Skip conversation context for shared brain
-        if False:  # Disabled for shared brain
-            # Count recent turns to determine if we're in a conversation
-            opinion_count = 0
-            for i in range(len(conversation_context)-1, -1, -1):
-                # Skip the current question which is already marked as opinion
-                if i == len(conversation_context)-1 and conversation_context[i]["role"] == "user":
-                    continue
-                # If we've gone back 3 turns (or hit beginning), stop counting
-                if opinion_count >= 3:
-                    break
-                # Check if assistant response includes chatbot-like elements (questions, conversation markers)
-                if conversation_context[i]["role"] == "assistant":
-                    if "?" in conversation_context[i]["content"] or any(marker in conversation_context[i]["content"].lower() for marker in ["how about you", "what do you", "tell me more", "what about"]):
-                        opinion_count += 1
-            
-            is_first_opinion_question = opinion_count == 0
-            print(f"[Brain] detected {'new' if is_first_opinion_question else 'ongoing'} opinion conversation with {opinion_count} previous turns")
-
-        # Add conversation context if this is a follow-up
-        if not is_first_opinion_question and conversation_context:
-            context_str = "\n\nCONVERSATION HISTORY:\n"
-            for msg in conversation_context:
-                role = "User" if msg["role"] == "user" else "You"
-                context_str += f"{role}: {msg['content']}\n"
-            prompt = context_str
-        
-        # Add specific instructions based on whether this is a new conversation or a follow-up
-        if is_first_opinion_question:
-            prompt = textwrap.dedent(
-                f"""    
-                The user has asked: "{question}"
-
-                Your response:
-                """
-            )
-        else:
-            # For follow-up exchanges, focus more on natural conversation flow
-            prompt += textwrap.dedent(
-                f"""
-                The user's latest message is: "{question}"
-                
-                Your response:
-                """
-            )
-
         try:
-            # Generate the response with appropriate temperature for personality
-            agent_key = "ag:a2eb8171:20250526:hozie-opinion:39084223"
-            chat_response = self.client.agents.complete(
-                agent_id=agent_key,
-                messages=[
+            model = "open-mistral-nemo"
+            chat_params = {
+                "model": model,
+                "temperature": temp,
+                "messages": [
                     {
                         "role": "user",
-                        "content": f"{prompt}",
+                        "content": prompt,
                     },
                 ],
-            )
-            response = chat_response.choices[0].message.content
+            }
             
-            # Debug output
-            print(f"[Brain] opinion prompt length: {len(prompt)} chars")
-            print(f"[Brain] opinion response length: {len(response)} chars")
+            if output_type:
+                chat_params["response_format"] = {"type": output_type}
+
+            if json_schema and output_type == "json_object":
+                chat_params["response_format"]["json_schema"] = json_schema
             
-            # Extract just the response portion - remove any added quotation marks
-            if "Your response:" in response:
-                response = response.split("Your response:")[-1].strip()
-                
-            # Remove any surrounding quotes if present
-            response = response.strip('"')
-            
-            print(f"[Brain] generated opinion response: {len(response)} chars")
-            
-            return response
+            chat_response = self.client.chat.complete(**chat_params)
+            return chat_response.choices[0].message.content
             
         except Exception as e:
-            print(f"[Brain] error generating opinion: {e}")
+            print(f"[Brain] Sync LLM call failed: {e}")
+            return "Error generating response"
+
+    def get_relevant_context(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        """
+        Simple context search using keyword matching and semantic similarity.
+        
+        Args:
+            query: Search query
+            max_results: Maximum number of results to return
             
-            # Fallback response if something goes wrong
-            if is_first_opinion_question:
-                return "Hey, that's a cool question! I'm still figuring out my thoughts on that. What kind of things do you like?"
+        Returns:
+            List of relevant context items sorted by relevance
+        """
+        
+        keywords = self._get_likely_keywords_from_llm(query)
+        if not keywords:
+            print(f"[Brain] No keywords generated from LLM, falling back to basic keyword extraction for query: '{query}'")
+            keywords = set(re.findall(r'\w+', query.lower()))
+        print(f"[Brain] Searching for keywords: {keywords}")
+
+        def calculate_relevance(node: 'SupabaseTopicNode') -> float:
+            """
+            Calculate relevance score for a node
+            
+            Args:
+                node: The node to evaluate
+
+            Returns:
+                float: Relevance score (0.0 to 1.0)
+            """
+            data_text = ""
+            if isinstance(node.data, dict):
+                data_text = " ".join(str(v) for v in node.data.values())
             else:
-                return "That's interesting! I'm still processing that one. What else is on your mind?"
+                data_text = str(node.data)
+            
+            full_text = f"{node.topic} {data_text}".lower()
+            
+            keyword_matches = sum(1 for kw in keywords if kw.lower() in full_text)
+            if keyword_matches == 0:
+                return 0.0
+            
+            base_score = keyword_matches / len(keywords)
+            
+            topic_matches = sum(1 for kw in keywords if kw.lower() in node.topic.lower())
+            topic_bonus = 1.0 + (topic_matches * 0.3)
+            
+            recency_bonus = 1.0
+            if hasattr(node, 'metadata') and 'last_updated' in node.metadata:
+                try:
+                    timestamp = float(node.metadata['last_updated'])
+                    recency_bonus = 1.0 + min(0.2, 1.0 / (1.0 + timestamp))
+                except (ValueError, TypeError):
+                    print(f"[Brain] Invalid timestamp in metadata for node {node.node_id}, using default recency bonus")
+            print(f"[Brain] Calculated score for node '{node.topic}': {base_score * topic_bonus * recency_bonus}")
+            return base_score * topic_bonus * recency_bonus
         
-    
-    
-    def _generate_answer(self, question: str, context_chunks: List[Dict], conversation_context: List[Dict] = None) -> str:
+        queue = deque([self.memory])
+        visited = set()
+        scored_nodes = []
         
-        """LLM final step: fuse context → natural-language answer."""
+        while queue:
+            node = queue.popleft()
+            
+            if node.node_id in visited:
+                continue
+            visited.add(node.node_id)
+            
+            score = calculate_relevance(node)
+            
+            if score > 0:
+                scored_nodes.append((score, node.data))
+                print(f"Found relevant: '{node.topic}' (score: {score:.3f})")
+            
+            for child in node.children:
+                if child.node_id not in visited:
+                    if any(kw.lower() in child.topic.lower() for kw in keywords):
+                        queue.append(child)
+        
+        scored_nodes.sort(key=lambda x: x[0], reverse=True)
+        results = [item[1] for item in scored_nodes[:max_results]]
+        
+        print(f"Returning {len(results)} context items")
+        return results
 
-        
-        if not context_chunks:
-            
-            print("[Brain] no context chunks available for answer generation")
-            
-            return "I don't have enough information to answer your question. I couldn't find relevant content in my memory or from web searches."
+    def _get_likely_keywords_from_llm(self, query: str) -> set:
+        """
+        Use Mistral AI to generate likely node categories and keywords for the search
+        Args:
+            query (str): The search query to generate keywords for
 
-        
-        print(f"[Brain] generating answer using {len(context_chunks)} context chunks")
-        
-        # Create short summaries of context chunks for logging
-        def format_value_for_log(value):
-            if isinstance(value, str) and len(value) > 50:
-                return value[:50] + "..."
-            elif isinstance(value, list):
-                return f"[{len(value)} items]"
-            else:
-                return value
-                
-        log_context = [
-            {k: format_value_for_log(v) for k, v in chunk.items()}
-            for chunk in context_chunks
-        ]
-        print(f"[Brain] context summary: {json.dumps(log_context)}")
-        
-        
-        # Format context for LLM prompt
-        formatted_context = []
-        for i, chunk in enumerate(context_chunks):
-            # Start with the context number
-            chunk_text = [f"CONTEXT {i+1}:"]
-            
-            # Add description if available
-            if 'description' in chunk and chunk['description']:
-                chunk_text.append(f"Description: {chunk['description']}")
-            
-            # Add bullet points if available
-            if 'bullet_points' in chunk and isinstance(chunk.get('bullet_points'), list):
-                points = []
-                for point in chunk['bullet_points']:
-                    if isinstance(point, str) and len(point) > 5:  # Skip very short points
-                        points.append(f"  • {point}")
-                if points:
-                    chunk_text.append("Key points:")
-                    chunk_text.extend(points)
-            
-            # Add other relevant fields
-            for k, v in chunk.items():
-                if k not in ('description', 'bullet_points') and isinstance(v, (str, int, float)):
-                    chunk_text.append(f"{k.capitalize()}: {v}")
-            
-            # Join all parts with newlines
-            formatted_context.append("\n".join(chunk_text))
-        
-        # Join all contexts with double newlines
-        context_str = "\n\n".join(formatted_context)
-        
-        # Add conversation context if available
-        conversation_str = ""
-        if conversation_context and len(conversation_context) > 0:
-            print(f"[Brain] including {len(conversation_context)} messages from conversation history")
-            conversation_lines = []
-            for msg in conversation_context:
-                # Format chat history as a conversation
-                speaker = "User" if msg["role"] == "user" else "Assistant"
-                conversation_lines.append(f"{speaker}: {msg['content']}")
-            conversation_str = "\n".join(conversation_lines)
-            print(f"[Brain] conversation context length: {len(conversation_str)} chars")
-        
-        prompt = ""
-        # Add conversation history context if available
-        if conversation_str:
-            prompt += textwrap.dedent(
-                f"""
-                CONVERSATION HISTORY:
-                {conversation_str}
-                """
-            )
-            
-        # Continue with knowledge context and instructions
-        prompt += textwrap.dedent(
-            f"""
-            KNOWLEDGE CONTEXT:
-            {context_str}
-            ANSWER:
-            """ )
-
-        # For follow-up questions, add specific instructions
-        if conversation_context and len(conversation_context) > 0:
-            prompt += textwrap.dedent(
-                """
-                This appears to be a follow-up question. Use the conversation history to understand the context of the question.
-                Make sure your answer maintains continuity with the previous conversation.
-                """
-            )
-            
-        # Complete the prompt
-        prompt += textwrap.dedent(
-            f"""
-
-            USER QUESTION: {question}
-            
-            ANSWER:"""
+        Returns:
+            set: Set of keywords generated by the LLM, or an empty set if generation fails
+        """
+        prompt = textwrap.dedent(f"""
+            Return ONLY a JSON Array of 20 possible categories that this query could fit into. Make sure to include 'Politics' for any query that references a place. Include 'Current Events' for any question that is asking about something happening now or recently. Make sure to include country names or any other very broad topics that could be related to the query too.
+            Query: {query}
+            """
         )
+        json_schema={
+            "type": "array",
+            "items": {"type": "string"}
+        }
+
+        output = self.sync_llm_call(prompt, temp=0.2, output_type='json_object', json_schema=json_schema)
+        print(f"[Brain] raw keywords output: {output}")
         
-        print("[Brain] sending prompt to LLM for final answer generation")
         try:
-            agent_key = "ag:a2eb8171:20250526:hozie:e68e7478"
-            chat_response = self.client.agents.complete(
-                agent_id=agent_key,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": f"{prompt}",
-                    },
-                ],
-            )
-            ans = chat_response.choices[0].message.content
+            keywords = json.loads(output.strip())
+            if isinstance(keywords, list) and all(isinstance(item, str) for item in keywords) and len(keywords) >= 2:
+                print(f"[Brain] generated keywords: {keywords}")
+                return keywords
+        except json.JSONDecodeError:
+            print(f"[Brain] failed to parse JSON from output: {output}")
+            # Fallback to simple keyword extraction if LLM fails
+            keywords = set(re.findall(r'\w+', query.lower()))
+            if not keywords:
+                print(f"[Brain] no keywords found in query: {query}")
+                return set()
+        print(f"[Brain] generated {len(keywords)} sub-topics for '{query}': {keywords}")
+        return keywords
 
-            print(f"[Brain] raw answer from LLM: {len(ans.strip())} chars")
-            
-            # Debug output for troubleshooting
-            print(f"[Brain] final prompt length: {len(prompt)} chars")
-            print(f"[Brain] raw answer length: {len(ans)} chars")
-            
-            # Extract only the answer portion
-            answer_marker = "ANSWER:"
-            if answer_marker in ans:
-                # Use the text after the last occurrence of ANSWER:
-                final_answer = ans.split(answer_marker)[-1].strip()
-            else:
-                # Try other possible markers
-                markers = ["USER QUESTION:", "Answer:", "Response:"]
-                for marker in markers:
-                    if marker in ans:
-                        parts = ans.split(marker)
-                        if len(parts) > 1:
-                            # Take the last part after this marker
-                            final_answer = parts[-1].strip()
-                            break
-                else:
-                    # If no markers found, use the whole response
-                    final_answer = ans.strip()
-            
-            print(f"[Brain] extracted final answer: {len(final_answer)} chars")
-            return final_answer
-        except Exception as e:
-            print(f"[Brain] error during answer generation: {e}")
-            return "I encountered an error while trying to generate an answer based on the information I found. Please try asking your question again."
+    def explore_topics_autonomously(self, base_topics: Optional[List[str]] = None, *, max_depth: int = 3, breadth: int = 5, max_total_topics: int = 50, subtopics_per_topic: int = 5, delay: float = 0.5, max_search_results: int = 5) -> List[str]:
+        """
+        Enhanced autonomous exploration of topics using LLM.
 
+        Args:
+            base_topics (Optional[List[str]]): Initial topics to start exploration from.
+            max_depth (int): Maximum depth of topic hierarchy to explore.
+            breadth (int): Number of subtopics to explore at each level.
+            max_total_topics (int): Maximum number of unique topics to explore in total.
+            subtopics_per_topic (int): Number of subtopics to generate for each topic.
+            delay (float): Delay between topic explorations to avoid rate limits.
+            temperature (float): Temperature for LLM generation.
+            max_search_results (int): Maximum number of search results to consider when generating subtopics.
 
-    # =====================================================================
-    #                       💾  MEMORY PERSISTENCE
-    # =====================================================================
-    
-    def _load_memory(self) -> bool:
-        """Load the memory tree from a JSON file."""
-        if not self.memory_file or not os.path.exists(self.memory_file):
-            # No memory file to load
-            return False
-            
-        try:
-            with open(self.memory_file, 'r', encoding='utf-8') as f:
-                memory_dict = json.load(f)
-                
-            # Remove metadata before loading
-            if "_meta" in memory_dict:
-                save_time = memory_dict["_meta"].get("saved_at", "unknown")
-                version = memory_dict["_meta"].get("version", "unknown")
-                print(f"[Brain] loading memory saved at {save_time} (version {version})")
-                del memory_dict["_meta"]
-                
-            # Create the memory tree from the dictionary
-            self.memory = SupabaseTopicNode.from_dict(memory_dict)
-            print(f"[Brain] successfully loaded memory from {self.memory_file}")
-            return True
-            
-        except Exception as e:
-            print(f"[Brain] ERROR loading memory from {self.memory_file}: {e}")
-            # Start with a fresh memory tree
-            self.memory = SupabaseTopicNode("Knowledge Base")
-            return False
-
-# -----------------------------------------------------------------------------
-# Example usage (manual run)
-# -----------------------------------------------------------------------------
-    def explore_topics_autonomously(self,
-                                      base_topics: Optional[List[str]] = None,
-                                      *,
-                                      max_depth: int = 3,
-                                      breadth: int = 5,
-                                      max_total_topics: int = 50,
-                                      subtopics_per_topic: int = 5,
-                                      delay: float = 0.5,
-                                      temperature: float = 0.7,
-                                      max_search_results: int = 5) -> List[str]:
-        """💡 **Enhanced autonomous exploration**
-
-        This upgraded routine aggressively expands the knowledge tree by performing a
-        *breadth-first* crawl over a topic hierarchy that it generates on-the-fly with
-        the LLM.  It repeatedly asks the model for *sub-topics* of each queued topic
-        and dives up to *max_depth* levels deep, respecting *max_total_topics* so we
-        don't explode our token quota.
-
-        Parameters
-        ----------
-        base_topics : list[str] | None
-            Seed topics to start from.  If *None*, we seed with a handful of very
-            broad academic domains.
-        max_depth : int, default 3
-            How many hierarchical levels to descend (root = 0).
-        breadth : int, default 5
-            Maximum number of topics to fetch *per level*.
-        max_total_topics : int, default 50
-            Hard ceiling on how many individual topics we explore in a single run.
-        subtopics_per_topic : int, default 5
-            How many sub-topics to request from the LLM for each topic.
-        delay : float, default 0.5
-            Pause (seconds) between web calls so we don't hammer rate-limits.
-        temperature : float, default 0.7
-            Sampling temperature for LLM when brainstorming sub-topics.
-        max_search_results : int, default 5
-            Maximum number of websites to scrape for each topic.
-
-        Returns
-        -------
-        list[str]
-            A flat list of *every* topic question that was pushed through
-            ``self.answer()`` during the session - useful for logs/stats.
+        Returns:
+            List[str]: List of explored topics/questions.
         """
 
-        print(f"[Brain] 🚀 starting enhanced autonomous exploration - target {max_total_topics} topics ...")
+        explored: List[str] = []               
+        queue: List[Tuple[str, int]] = []      
 
-        explored: List[str] = []               # flat list of explored questions
-        queue: List[Tuple[str, int]] = []      # (topic, depth)
-
-        # ------------------------------------------------------------------
-        # 1.  Seed queue
-        # ------------------------------------------------------------------
         if base_topics:
             queue.extend([(t, 0) for t in base_topics[:breadth]])
             print(f"[Brain] seeding with user-supplied base topics: {base_topics[:breadth]}")
@@ -1749,35 +1352,32 @@ class Brain:
             queue.extend([(t, 0) for t in random.sample(default_roots, k=min(breadth, len(default_roots)))])
             print(f"[Brain] seeding with default academic domains: {[q[0] for q in queue]}")
 
-        # ------------------------------------------------------------------
-        # 2.  Helper - expand a topic into subtopics using the LLM
-        # ------------------------------------------------------------------
         def _generate_subtopics(topic: str, k: int) -> List[str]:
             prompt = textwrap.dedent(f"""
-                List {k} highly specific sub-topics that a university-level
-                researcher would study **within** the domain of "{topic}".
-                • respond with one sub-topic per line, phrased as a direct
-                  question beginning with *How*, *Why* or *What* so it can be
-                  fed straight into a search engine.
+                List {k} highly specific sub-topics that a university-level researcher would study within the domain of "{topic}".Respond with a single JSON array of sub-topics phrased as a direct question beginning with How, Why or What so it can be fed straight into a search engine.
             """)
+            json_schema={
+            "type": "array",
+            "items": {"type": "string"}
+            }
+            #higher temp of 0.7 to encourage exploration over exploitation
+            output = self.sync_llm_call(prompt, temp=0.4, output_type="json_object", json_schema=json_schema)
+            print(f"[Brain] generated sub-topics for '{topic}': {output}")
+            subtopics = []
             try:
-                raw = self.gen(prompt, max_new_tokens=64, temperature=temperature)[0]["generated_text"]
-                lines = [re.sub(r"^[•\-\d\.\s]*", "", l).strip() for l in raw.splitlines()]
-                # keep unique, non-empty, question-like lines
-                sub = []
-                for l in lines:
-                    if l and l[-1] == '?' and l not in sub:
-                        sub.append(l)
-                    if len(sub) >= k:
-                        break
-                return sub
-            except Exception as e:
-                print(f"[Brain] sub-topic generation failed for '{topic}': {e}")
-                return []
+                subtopics = json.loads(output.strip())
+                if isinstance(subtopics, list) and all(isinstance(item, str) for item in subtopics) and len(subtopics) >= 2:
+                    print(f"[Brain] generated subtopics: {subtopics}")
+                    return subtopics
+            except json.JSONDecodeError:
+                print(f"[Brain] JSON decode error for topic '{topic}': {output}")
+            print(f"[Brain] generated {len(subtopics)} sub-topics for '{topic}': {subtopics}")
+            if(len(subtopics) < k):
+                print(f"[Brain] Warning: fewer sub-topics generated than requested ({len(subtopics)} < {k}) for topic '{topic}'")
+                return subtopics
+            return subtopics[:k]  
 
-        # ------------------------------------------------------------------
-        # 3.  BFS over topic hierarchy
-        # ------------------------------------------------------------------
+
         while queue and len(explored) < max_total_topics:
             topic, d = queue.pop(0)
             question = f"Tell me about {topic}" if not topic.endswith('?') else topic
@@ -1786,17 +1386,15 @@ class Brain:
             try:
                 self.answer(question, max_search_results=max_search_results) 
                 explored.append(question)
-                self._save_memory()
             except Exception as e:
                 print(f"[Brain] ⚠️ exploration error: {e}")
 
-            # stop descending if depth limit reached or global budget exhausted
             if d >= max_depth or len(explored) >= max_total_topics:
                 continue
 
             # brainstorm sub-topics and enqueue them
             children = _generate_subtopics(topic, subtopics_per_topic)
-            random.shuffle(children)            # add variety
+            random.shuffle(children) 
             for child in children[:breadth]:
                 if len(explored) + len(queue) >= max_total_topics:
                     break
@@ -1804,9 +1402,9 @@ class Brain:
 
             time.sleep(delay)
 
-        print(f"[Brain] 🏁 exploration complete - {len(explored)} topics added to memory")
+        print(f"[Brain] exploration complete - {len(explored)} topics added to memory")
         return explored
-
+    
     async def process_search_results_parallel(self, search_hits, user_question: str):
         """Process search results in parallel - scraping and summarizing concurrently"""
         
@@ -1879,16 +1477,20 @@ class Brain:
             async def store_single_result(summary: Dict) -> bool:
                 """Store a single processed result"""
                 try:
-                    # Generate topic path
-                    path = await asyncio.get_event_loop().run_in_executor(
-                        None, self._generate_topic_path, user_question, summary.get("main_idea", "Unknown"), summary
-                    )
+                    import concurrent.futures
+                    # Generate topic path using a thread pool executor
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        path = await asyncio.get_running_loop().run_in_executor(
+                            executor, self._generate_topic_path, user_question, summary.get("main_idea", "Unknown"), summary
+                        )
                     
                     print(f"[Brain] storing under path: {'/'.join(path)}")
                     
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, self._insert_memory, path, summary, summary.get("source", "")
-                    )
+                    # Store the memory using a thread pool executor
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        await asyncio.get_running_loop().run_in_executor(
+                            executor, self._insert_memory, path, summary, summary.get("source", "")
+                        )
                     
                     return True
                 except Exception as e:
@@ -1919,23 +1521,6 @@ class Brain:
             print("[Brain] failed to search web: ", e)
             return "My bad bro I couldn't find any information on that topic. You can try rephrasing your question."
 
-# -----------------------------------------------------------------------------
-# Example usage (manual run)
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-     brain = Brain()
-     
-     # Test opinion generation (interactive chatbot)
-     print("\n>>> Starting opinion conversation...")
-     opinion = brain.answer("What's your favorite type of music?")
-     print("\n>>>", opinion)
-     
-     # Continue the conversation
-     follow_up = brain.answer("That's cool! I like rock music. What do you think about movies?")
-     print("\n>>>", follow_up)
-     
-     # Test factual question with multiple websites (aggregated search)
-     print("\n>>> Asking a factual question with 3 search results...")
-     factual = brain.answer("How are black holes formed?", max_search_results=3)
-     print("\n>>>", factual)
-     
+    brain = Brain()
+    brain.explore_topics_autonomously(base_topics=["Artificial Intelligence", "Quantum Computing"], max_depth=2, breadth=3, max_total_topics=10, subtopics_per_topic=2, delay=0.5, max_search_results=3)

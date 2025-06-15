@@ -1,3 +1,4 @@
+from typing import Any, Dict, Optional
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import timedelta
@@ -21,9 +22,12 @@ app.config['MISTRAL_API_KEY'] = os.getenv('MISTRAL_API_KEY', None)
 
 jwt_manager = JWTManager(app)
 
-def get_authenticated_user():
+def get_authenticated_user() -> str:
     """
     Returns the uuid (sub) if valid
+
+    Returns:
+        str: The user uuid (sub) if valid, None otherwise.
     """
     auth_header = request.headers.get('Authorization', None)
     if auth_header and auth_header.startswith("Bearer "):
@@ -36,9 +40,15 @@ def get_authenticated_user():
             print("No valid Authorization header found")
     return None
 
-def verify_supabase_jwt(token):
+def verify_supabase_jwt(token) -> Optional[Dict[str, Any]]:
     """
     Verify a JWT token from Supabase.
+
+    Args:
+        token (str): The JWT token to verify.
+
+    Returns:
+        Optional[Dict[str, Any]]: The decoded token if valid, None otherwise.
     """
     try:
         jwt_secret = os.environ.get("SUPABASE_JWT_SECRET")
@@ -50,7 +60,7 @@ def verify_supabase_jwt(token):
             token,
             jwt_secret,
             algorithms=["HS256"],
-            options={"verify_aud": False} #TODO: look into verifying audience
+            options={"verify_aud": False} #Don't verify audience in dev
         )
         return decoded
     except jwt.ExpiredSignatureError:
@@ -69,6 +79,9 @@ global_brain = None
 def get_global_brain() -> Brain:
     """
     shared brain instance for all users to make hozie get smarter over time from all user queries instead of a per user brain that will only learn from that one user
+
+    Returns:
+        Brain: The global brain instance.
     """
     global global_brain
     if global_brain is None:
@@ -84,6 +97,12 @@ def get_global_brain() -> Brain:
 def add_cors_headers(response):
     """
     Add CORS headers to the response.
+
+    Args:
+        response: The Flask response object.
+
+    Returns:
+        response: The modified response object with CORS headers.
     """
     origin = request.headers.get('Origin', '')
     response.headers.add('Access-Control-Allow-Origin', origin)
@@ -94,9 +113,12 @@ def add_cors_headers(response):
 
 
 @app.route('/api/chat', methods=['POST'])
-def chat():
+def chat() -> Any:
     """
     Only allow users to chat if they are authenticated (They have to verify email too) then return a response from the brain instance.
+
+    Returns:
+        Any: JSON response containing the reply from the brain instance or an error message.
     """
     user_id = get_authenticated_user()
     if not user_id:
@@ -145,9 +167,12 @@ def chat():
         }), 500
 
 @app.route('/health', methods=['GET'])
-def health():
+def health() -> Any:
     """
     Health check endpoint to verify if the backend is running and the brain instance is active.
+
+    Returns:
+        Any: JSON response indicating the health status of the backend and the brain instance.
     """
     return jsonify({
         'status': 'healthy',
@@ -156,10 +181,13 @@ def health():
 
 
 @app.route('/api/queue_status', methods=['GET'])
-def queue_status():
+def queue_status() -> Any:
     """
     queue if theres a lot of users chatting at once (not really implemented fully since I don't have that many users yet lol)
     Returns the queue status for the authenticated user.
+
+    Returns:
+        Any: JSON response containing the user's queue position and status.
     """
     user_id = get_authenticated_user()
     if not user_id:

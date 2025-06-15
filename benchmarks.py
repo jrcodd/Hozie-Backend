@@ -1,11 +1,21 @@
 from datasets import load_dataset
-import openai  # or your own Hozie API
+from mistralai import Mistral
 import pandas as pd
 import time
 
 # Replace this with your actual Hozie query function
 def query_hozie(prompt: str) -> str:
     """Replace with actual call to Hozie system."""
+    client = Mistral(api_key=)
+    response = client.messages.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response['choices'][0]['message']['content']
+
+# Load a subset of MMLU
+dataset = load_dataset("hendrycks_test", "high_school_chemistry", split="test[:50]")
+
     # Placeholder using OpenAI as example
     response = openai.ChatCompletion.create(
         model="gpt-4",

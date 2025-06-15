@@ -15,27 +15,37 @@ Available commands
 
 from __future__ import annotations
  
-from datetime import datetime, timezone
 import textwrap
 from typing import List
 import argparse
 from LLM import Brain
-from topic_node import TopicNode
-from task_splitter import TaskSplitter, LLMClientWrapper
+from supabase_topic_node import SupabaseTopicNode
 
-# ----------------------------------------------------------------------------
-#  Helper functions for memory-tree display and search
-# ----------------------------------------------------------------------------
-
-def _print_tree(node: TopicNode, indent: str = "") -> None:
-    """Pretty-print the TopicNode hierarchy."""
+def _print_tree(node: SupabaseTopicNode, indent: str = "") -> None:
+    """
+    Pretty-print the SupabaseTopicNode hierarchy.
+    
+    Args:
+        node (SupabaseTopicNode): The root node of the tree to print.
+        indent (str): Current indentation level for pretty-printing.
+    """
     print(f"{indent}- {node.topic}")
     for child in node.children:
         _print_tree(child, indent + "  ")
 
 
-def _search_tree(node: TopicNode, term: str, path: str = "") -> List[str]:
-    """Return list of paths whose titles match *term* (case-insensitive)."""
+def _search_tree(node: SupabaseTopicNode, term: str, path: str = "") -> List[str]:
+    """
+    Return list of paths whose titles match *term* (case-insensitive).
+    
+    Args:
+        node (SupabaseTopicNode): The root node of the tree to search.
+        term (str): The search term to look for in node titles.
+        path (str): Current path in the tree, used for building full paths.
+
+    Returns:
+        List[str]: List of full paths to nodes whose titles match the search term.
+    """
     matches: List[str] = []
     full_path = f"{path}/{node.topic}" if path else node.topic
     if term.lower() in node.topic.lower():
@@ -44,11 +54,10 @@ def _search_tree(node: TopicNode, term: str, path: str = "") -> List[str]:
         matches.extend(_search_tree(child, term, full_path))
     return matches
 
-# ----------------------------------------------------------------------------
-#  CLI loop
-# ----------------------------------------------------------------------------
-
 def _print_help() -> None:
+    """
+    Print the help message with available commands.
+    """
     print(textwrap.dedent(
         """
         ── Available commands ────────────────────────────────────────────────
@@ -58,16 +67,18 @@ def _print_help() -> None:
           data {name of node}  Show data for a specific node
           leafinfo {/first/second/third/.../leaf}  Show data for a specific leaf node
           think                Ask the LLM to think about a topic on its own
-          codegen <task>   Generate code for a specific task
           quit / exit          Exit the program
         """.rstrip()
     ))
 
 
-def interactive_mode(model_name: str = "mistral", host: str = "http://localhost:11434") -> None:
-    """Run Hozie in interactive CLI mode."""
-    brain = Brain(model_name=model_name, host=host)  # Initialize the Brain with specified parameters
-    
+def interactive_mode(brain: Brain) -> None:
+    """
+    Run Hozie in interactive CLI mode.
+
+    Args:
+        brain (Brain): The Brain instance to interact with.
+    """
     print("Hozie CLI — press Enter for commands. Type 'exit' to quit.")
 
     try:
@@ -75,7 +86,7 @@ def interactive_mode(model_name: str = "mistral", host: str = "http://localhost:
             try:
                 raw = input("hozie> ").strip()
             except EOFError:
-                print()  # handle Ctrl-D
+                print()  
                 break
 
             if raw == "":
@@ -139,61 +150,32 @@ def interactive_mode(model_name: str = "mistral", host: str = "http://localhost:
                     continue
                 reply = brain.explore_topics_autonomously(base_topics=[question])
                 print("\n>>>", reply)
-            elif cmd == "codegen":
-                task = arg or input("What task should I generate code for? ")
-                if not task:
-                    print("Please provide a task description.")
-                    continue
-                llm_client = LLMClientWrapper(brain)
-                # Initialize code generator
-                splitter = TaskSplitter(llm_client)    
-                task_title = datetime.now(timezone.utc).isoformat()
-                task_description = task
-                # Execute full workflow
-                print("Executing full workflow to code your thing... (this takes a few minutes dw I'm working on it)")
-                result = splitter.execute_full_workflow(task_title, task_description, "python")
-                # Save the results
-                splitter.save_complex_task(result, "code_task.json")
-                print("Results saved to code_task.json")
-                # Show final implementation
-                if result.final_implementation:
-                    print("Final implementation:")
-                    print(result.final_implementation)
-                else:
-                    print("Failed to generate final implementation")
-
-
-                # Execute the full pipeline
-
+           
             else:
                 print(f"Unknown command: {cmd}")
                 _print_help()
             
 
     except KeyboardInterrupt:
-        print("\n^C — exiting…")
+        print("\n^C — exiting...")
 
 
 def main() -> None:
-    """Entry point for the CLI with command-line argument support."""
+    """
+    Entry point for the CLI with command-line argument support.
+    """
+    brain = Brain()
     parser = argparse.ArgumentParser(description="Hozie Voice Assistant Memory System CLI")
-    parser.add_argument("--model", type=str, default="mistral", 
-                        help="Model name to use for Ollama (default: mistral)")
-    parser.add_argument("--host", type=str, default="http://localhost:11434",
-                        help="Ollama host URL (default: http://localhost:11434)")
     parser.add_argument("--question", type=str, 
                         help="Direct question to ask without entering interactive mode")
     
     args = parser.parse_args()
     
     if args.question:
-        # Direct question mode
-        brain = Brain(model_name=args.model, host=args.host)
         reply = brain.answer(args.question)
         print("\n>>>", reply)
     else:
-        # Interactive mode
-        interactive_mode(model_name=args.model, host=args.host)
+        interactive_mode(brain)
 
 
 if __name__ == "__main__":
