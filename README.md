@@ -145,6 +145,7 @@ To make the server accessible on your local network (e.g., for testing with a mo
 ```bash
 flask run --host=0.0.0.0
 ```
+In addition, you can run cli.py to interact with the model from a command line interface
 
 ## Future Work & Improvements
 
