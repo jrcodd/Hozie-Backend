@@ -1,5 +1,3 @@
-#I'm running into rate limit issues when using the new async plan. Have to look into using my credits which are not being used for some reason. Have to figure out how to switch to the paid plan
-
 import json
 import os
 import re
@@ -12,7 +10,6 @@ from typing import Dict, List, Sequence, Tuple, Optional
 
 import requests
 from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS 
 from mistralai import Mistral
 
 from supabase_topic_node import SupabaseTopicNode 
