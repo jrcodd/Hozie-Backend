@@ -1203,7 +1203,7 @@ class Brain:
     def get_relevant_context(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """
         Efficient context search using DFS with relevance-based pruning.
-        Only explores branches that show relevance to avoid traversing the entire tree.
+        Only explores branches that show relevance to avoid traversing the entire tree and make time complexity closer to O(lgn). LLM generation should be close to constant time with the short prompt. In the future will make a fine tuned model to make this more true.
         
         Args:
             query: Search query
@@ -1223,15 +1223,19 @@ class Brain:
             """
             Quick check if a node or its subtree might be relevant.
             Used for pruning irrelevant branches early.
+
+            Args:
+                node: The SupabaseTopicNode to check for relevance.
+
+            Returns:
+                bool: True if the node is relevant based on keywords, False otherwise.
             """
             title = node.topic.lower() if hasattr(node, 'topic') else ''
             
-            # Check if any keyword appears in the node title
             for kw in keywords:
                 if isinstance(kw, str) and kw.lower() in title:
                     return True
             
-            # Check data if available
             if isinstance(node.data, dict) and node.data:
                 data_text = node.data.get("description", "").lower()
                 bullet_points = node.data.get("bullet_points", [])
@@ -1239,7 +1243,6 @@ class Brain:
                 for kw in keywords:
                     if isinstance(kw, str) and kw.lower() in data_text:
                         return True
-                    # Quick check in bullet points
                     if isinstance(bullet_points, list):
                         for point in bullet_points[:3]:  # Only check first 3 bullet points for speed
                             if isinstance(point, str) and kw.lower() in point.lower():
@@ -1250,8 +1253,13 @@ class Brain:
         def calculate_relevance_score(node: 'SupabaseTopicNode') -> float:
             """
             Calculate detailed relevance score for nodes that passed initial screening.
+
+            Args:
+                node: The SupabaseTopicNode to score.
+
+            Returns:
+                float: Relevance score between 0.0 and 1.0.
             """
-            # Only score nodes that have actual data
             if not isinstance(node.data, dict) or not node.data:
                 return 0.0
                 
@@ -1259,7 +1267,6 @@ class Brain:
             bullet_points = node.data.get("bullet_points", [])
             title = node.topic if hasattr(node, 'topic') else ''
             
-            # Combine all text for matching
             all_text = f"{title} {data_text}"
             if isinstance(bullet_points, list):
                 all_text += " " + " ".join(str(point) for point in bullet_points)
@@ -1279,10 +1286,8 @@ class Brain:
             if total_keywords == 0:
                 return 0.0
                 
-            # Calculate base relevance score
             base_score = keyword_matches / total_keywords
             
-            # Boost nodes with more content (leaf nodes are more valuable)
             depth = node.get_depth()
             content_boost = min(len(data_text) / 500.0, 1.0)  # Normalize content length
             depth_boost = min(depth / 5.0, 1.0)  # Deeper nodes get slight boost
@@ -1295,16 +1300,22 @@ class Brain:
         def dfs_search(node: 'SupabaseTopicNode', visited: set, scored_nodes: list) -> None:
             """
             DFS traversal that only explores relevant branches.
+
+            Args:
+                node: The current SupabaseTopicNode to explore.
+                visited: Set of already visited node IDs to avoid cycles.
+                scored_nodes: List to collect scored nodes for final sorting.
+
+            Returns:
+                None: This function modifies scored_nodes in place.
             """
             if node.node_id in visited:
                 return
             visited.add(node.node_id)
             
-            # Always check if current node is relevant
             if is_node_relevant(node):
                 print(f"[Brain] Exploring relevant node: '{node.topic}'")
                 
-                # Calculate detailed score for relevant nodes with data
                 if isinstance(node.data, dict) and node.data:
                     score = calculate_relevance_score(node)
                     if score > 0.0:
@@ -1327,14 +1338,12 @@ class Brain:
                 for child in relevant_children:
                     dfs_search(child, visited, scored_nodes)
         
-        # Start DFS from root
         visited = set()
         scored_nodes = []
         
         print(f"[Brain] Starting DFS search from root: '{self.memory.topic}'")
         dfs_search(self.memory, visited, scored_nodes)
         
-        # Sort by relevance score and return top results
         scored_nodes.sort(key=lambda x: x[0], reverse=True)
         
         # Return just the data from top results
@@ -1345,7 +1354,8 @@ class Brain:
 
     def _get_likely_keywords_from_llm(self, query: str) -> set:
         """
-        Use Mistral AI to generate likely node categories and keywords for the search
+        Use Mistral AI to generate likely node categories and keywords for the search. In the future use a fine-tuned model for this to make time closer to constant
+
         Args:
             query (str): The search query to generate keywords for
 
