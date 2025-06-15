@@ -130,11 +130,15 @@ SUPABASE_JWT_SECRET="your-supabase-jwt-secret-from-auth-settings"
 
 ## Running the Service
 
-With the virtual environment activated and the `.env` file configured, you can run the Flask development server:
+With the virtual environment activated and the `.env` file configured, you can run the cli.py file to interact with Hozie or you can run the Flask development server:
+```bash
+python3 cli.py
+```
+or 
 ```bash
 flask run
 ```
-or run 
+or 
 ```bash
 python3 run.py
 ```
@@ -145,7 +149,6 @@ To make the server accessible on your local network (e.g., for testing with a mo
 ```bash
 flask run --host=0.0.0.0
 ```
-In addition, you can run cli.py to interact with the model from a command line interface
 
 ## Future Work & Improvements
 
