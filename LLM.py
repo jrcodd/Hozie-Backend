@@ -33,8 +33,8 @@ class Brain:
 
     entry point is Brain.answer(question: str) → str
     """
-
-    def __init__(self) -> None:
+    debug = True
+    def __init__(self, debug: bool = True) -> None:
         """
         Connect to Mistral API and create or load memory tree.
         
@@ -43,7 +43,9 @@ class Brain:
         """
         self.api_key = os.environ.get('MISTRAL_API_KEY')
         self._init_mistral()
-        print(f"[Brain] using Supabase storage for global memory")
+        self.debug = debug
+        if(debug):
+            print(f"[Brain] using Supabase storage for global memory")
         self.memory = SupabaseTopicNode.get_global_root()
         self.chat_history = None
     
@@ -55,7 +57,8 @@ class Brain:
             raise ValueError("Mistral API key is required. Set MISTRAL_API_KEY environment variable")
 
         self.client = Mistral(api_key=self.api_key)
-        print("[Brain] Mistral API connected.✓")
+        if(self.debug):
+            print("[Brain] Mistral API connected.✓")
 
     def _rewrite_query(self, user_query: str) -> str:
         """
@@ -115,7 +118,8 @@ class Brain:
         }
         
         try:
-            print(f"[Brain] Searching Brave for: {query}")
+            if(self.debug):
+                print(f"[Brain] Searching Brave for: {query}")
             response = requests.get(
                 'https://api.search.brave.com/res/v1/web/search',
                 headers=headers,
@@ -128,7 +132,8 @@ class Brain:
                 results = []
                 
                 web_results = data.get('web', {}).get('results', [])
-                print(f"[Brain] Brave returned {len(web_results)} results")
+                if(self.debug):
+                    print(f"[Brain] Brave returned {len(web_results)} results")
                 
                 for result in web_results[:max_results]:
                     title = result.get('title', '')
@@ -141,15 +146,16 @@ class Brain:
                             'title': title,
                             'snippet': description
                         })
-                        print(f"[Brain] Added result: {title[:50]}...")
-                
+                        if(self.debug): 
+                            print(f"[Brain] Added result: {title[:50]}...")
+
                 return results
             else:
-                print(f"[Brain] Brave API error: {response.status_code} - {response.text}")
+                if(self.debug): print(f"[Brain] Brave API error: {response.status_code} - {response.text}")
                 return []
                 
         except Exception as e:
-            print(f"[Brain] Brave search error: {e}")
+            if(self.debug): print(f"[Brain] Brave search error: {e}")
             return []
     
     def _scrape(self, url: str, char_limit: int = 12000) -> str:
@@ -176,7 +182,7 @@ class Brain:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/123.0.0.0",
         ]
         
-        print(f"[Brain] scraping: {url}")
+        if(self.debug): print(f"[Brain] scraping: {url}")
         
         headers = {
             "User-Agent": random.choice(USER_AGENTS),
@@ -204,7 +210,7 @@ class Brain:
 
                 new_user_agent = random.choice(alternative_user_agents)
                 headers["User-Agent"] = new_user_agent
-                print(f"[Brain] retrying with different user agent")   
+                if(self.debug): print(f"[Brain] retrying with different user agent")   
 
             try:
                 response = requests.get(url, timeout=10, headers=headers, allow_redirects=True)
@@ -212,7 +218,7 @@ class Brain:
                 
                 content_type = response.headers.get('Content-Type', '').lower()
                 if 'text/html' not in content_type:
-                    print(f"[Brain] skipping non-HTML content: {content_type}")
+                    if(self.debug): print(f"[Brain] skipping non-HTML content: {content_type}")
                     return None
                     
                 return response.text
@@ -220,10 +226,10 @@ class Brain:
                 #Only retry once to prevent an infinite loop
                 if not retry and hasattr(e, 'response') and e.response.status_code in [403, 429]:
                     return fetch_url(retry=True)
-                print(f"[Brain] HTTP error: {e}")
+                if(self.debug): print(f"[Brain] HTTP error: {e}")
                 return None
             except Exception as e:
-                print(f"[Brain] request error: {e}")
+                if(self.debug): print(f"[Brain] request error: {e}")
                 return None
         
         html_content = fetch_url()
@@ -281,7 +287,7 @@ class Brain:
             return ""
             
         except Exception as e:
-            print(f"[Brain] error parsing content: {e}")
+            if(self.debug): print(f"[Brain] error parsing content: {e}")
             return ""
 
     def _summarise(self, raw_text: str) -> Dict:
@@ -297,10 +303,10 @@ class Brain:
 
 
         if len(raw_text) < 200: 
-            print(f"[Brain] text too short: ({len(raw_text)} chars)")
+            if(self.debug): print(f"[Brain] text too short: ({len(raw_text)} chars)")
             return {}
 
-        print(f"[Brain] attempting to summarize {len(raw_text)} chars of text")
+        if(self.debug): print(f"[Brain] attempting to summarize {len(raw_text)} chars of text")
         
         prompt = f"{raw_text}"
         output = ""
@@ -329,7 +335,7 @@ class Brain:
 
         """
         try:
-            print("[Brain] generating summary with LLM...")
+            if(self.debug): print("[Brain] generating summary with LLM...")
             agent_key = "ag:a2eb8171:20250526:hozie-web-summary:d913c3b8"
             chat_response = self.client.agents.complete(
                 agent_id=agent_key,
@@ -341,11 +347,11 @@ class Brain:
                 ],
             )
             response = chat_response.choices[0].message.content
-            print(f"[Brain] summarized output length: {len(response)} chars")
+            if(self.debug): print(f"[Brain] summarized output length: {len(response)} chars")
             
             try:
                 data = json.loads(response)
-                print(f"[Brain] successfully extracted JSON with keys: {list(data.keys())}")
+                if(self.debug): print(f"[Brain] successfully extracted JSON with keys: {list(data.keys())}")
                 
                 required_keys = ["main_idea", "description", "bullet_points", "source"]
                 for key in required_keys:
@@ -353,18 +359,18 @@ class Brain:
                         data[key] = "" if key != "bullet_points" else []
                 
                 if not isinstance(data["bullet_points"], list):
-                    print("[Brain] bullet_points is not formatted correctly, trying to convert to list")
+                    if(self.debug): print("[Brain] bullet_points is not formatted correctly, trying to convert to list")
                     data["bullet_points"] = [data["bullet_points"]] if data["bullet_points"] else []
             
                 return data
                 
             except json.JSONDecodeError as e:
-                print(f"[Brain] JSON parsing error: {e}")
+                if(self.debug): print(f"[Brain] JSON parsing error: {e}")
 
         except Exception as e:
-            print(f"[Brain] Error during summarization: {e}")
+            if(self.debug): print(f"[Brain] Error during summarization: {e}")
             if not output:
-                print("[Brain] No output generated, returning empty node")
+                if(self.debug): print("[Brain] No output generated, returning empty node")
                 return {
                     "main_idea": "None",
                     "description": f"Failed to process content: {str(e)}",
@@ -406,13 +412,13 @@ class Brain:
         for child in node.children:
             # 1. Check for exact match ignoring case
             if child.topic.lower() == next_topic.lower():
-                print(f"[Brain] found case-insensitive match: {child.topic} for {next_topic}")
+                if(self.debug): print(f"[Brain] found case-insensitive match: {child.topic} for {next_topic}")
                 return self._check_similar_path(child, target_path[1:], current_path + [child.topic])
                 
             # 2. Check if one is a prefix/suffix of the other
             # This will match "Black Holes" with "Black Hole" or "Black Holes Formation"
             if child.topic.lower().startswith(next_topic.lower()) or next_topic.lower().startswith(child.topic.lower()):
-                print(f"[Brain] found prefix/suffix match: {child.topic} for {next_topic}")
+                if(self.debug): print(f"[Brain] found prefix/suffix match: {child.topic} for {next_topic}")
                 return self._check_similar_path(child, target_path[1:], current_path + [child.topic])
                 
             # 3. Check for word-level similarity
@@ -425,7 +431,7 @@ class Brain:
                 similarity = len(overlap) / max(len(child_words), len(target_words))
                 
                 if similarity > 0.8:  
-                    print(f"[Brain] found similar node: {child.topic} for {next_topic} (similarity: {similarity:.2f})")
+                    if(self.debug): print(f"[Brain] found similar node: {child.topic} for {next_topic} (similarity: {similarity:.2f})")
                     return self._check_similar_path(child, target_path[1:], current_path + [child.topic])
         
         # 4. Special case handling for common hierarchical relationships
@@ -433,13 +439,13 @@ class Brain:
         if (node.topic.lower() == "science" and next_topic.lower() in science_categories) or \
            (next_topic.lower() == "science" and node.topic.lower() in science_categories):
             # If this is a science-related path, check if we're duplicating the hierarchy
-            print(f"[Brain] detected potential science category duplication: {node.topic} vs {next_topic}")
+            if(self.debug): print(f"[Brain] detected potential science category duplication: {node.topic} vs {next_topic}")
             
             # For "Science/Physics" and "Physics" patterns, prefer the more specific
             if node.topic.lower() == "science" and next_topic.lower() in science_categories:
                 for child in node.children:
                     if child.topic.lower() == next_topic.lower():
-                        print(f"[Brain] found science subcategory: {child.topic}")
+                        if(self.debug): print(f"[Brain] found science subcategory: {child.topic}")
                         return self._check_similar_path(child, target_path[1:], current_path + [child.topic])
             
         # No similar path found
@@ -457,22 +463,22 @@ class Brain:
         """
         
         if not topic_path:
-            print("[Brain] ERROR: Empty topic path provided, using fallback path")
+            if(self.debug): print("[Brain] ERROR: Empty topic path provided, using fallback path")
             topic_path = ["Uncategorized", "WebContent"]
         
         # Ensure topic_path is a list of strings
         if not isinstance(topic_path, (list, tuple)):
-            print(f"[Brain] ERROR: topic_path is not iterable: {type(topic_path)}, converting to list")
+            if(self.debug): print(f"[Brain] ERROR: topic_path is not iterable: {type(topic_path)}, converting to list")
             topic_path = [str(topic_path)]
         elif not all(isinstance(item, str) for item in topic_path):
-            print("[Brain] ERROR: topic_path contains non-string items, converting")
+            if(self.debug): print("[Brain] ERROR: topic_path contains non-string items, converting")
             topic_path = [str(item) for item in topic_path]
             
         if not data:
-            print("[Brain] ERROR: Empty data provided, skipping memory insertion")
+            if(self.debug): print("[Brain] ERROR: Empty data provided, skipping memory insertion")
             return
             
-        print(f"[Brain] inserting data into memory at path: {'/'.join(topic_path)}")
+        if(self.debug): print(f"[Brain] inserting data into memory at path: {'/'.join(topic_path)}")
         
         try:
             if topic_path[0] == self.memory.topic:
@@ -481,10 +487,10 @@ class Brain:
                 found_similar, existing_node, existing_path = self._check_similar_path(self.memory, topic_path)
             
             if found_similar:
-                print(f"[Brain] found similar existing path: {'/'.join(existing_path)}")
+                if(self.debug): print(f"[Brain] found similar existing path: {'/'.join(existing_path)}")
                 current_node = existing_node
             else:
-                print(f"[Brain] creating new path: {'/'.join(topic_path)}")
+                if(self.debug): print(f"[Brain] creating new path: {'/'.join(topic_path)}")
                 
                 current_node = self.memory
                 for i, topic in enumerate(topic_path):
@@ -492,21 +498,21 @@ class Brain:
                     if not child:
                         if i == len(topic_path) - 1:
                             child = current_node.add_child(topic, data)
-                            print(f"[Brain] created leaf node: {child.topic}")
+                            if(self.debug): print(f"[Brain] created leaf node: {child.topic}")
                         else:
                             child = current_node.add_child(topic)
-                            print(f"[Brain] created intermediate node: {child.topic}")
+                            if(self.debug): print(f"[Brain] created intermediate node: {child.topic}")
                     current_node = child
             
             node = current_node
-            print(f"[Brain] node created/found: {node.topic}")
+            if(self.debug): print(f"[Brain] node created/found: {node.topic}")
                         
             # Merge dictionaries newer values overwrite older ones
             if isinstance(node.data, dict) and node.data:
-                print(f"[Brain] merging with existing data ({len(node.data)} keys)")
+                if(self.debug): print(f"[Brain] merging with existing data ({len(node.data)} keys)")
                 node.data.update(data)
             else:
-                print("[Brain] setting new data")
+                if(self.debug): print("[Brain] setting new data")
                 node.data = data
 
             meta_entry = {
@@ -516,10 +522,10 @@ class Brain:
             }
             node.metadata.setdefault("sources", []).append(meta_entry)
             node.metadata["last_updated"] =  _get_time()
-            print(f"[Brain] successfully stored data under: {'/'.join(topic_path)}")
+            if(self.debug): print(f"[Brain] successfully stored data under: {'/'.join(topic_path)}")
                         
         except Exception as e:
-            print(f"[Brain] ERROR during memory insertion: {e}")
+            if(self.debug): print(f"[Brain] ERROR during memory insertion: {e}")
 
     def _generate_topic_path(self, query: str, title: str, data: Dict) -> List[str]:
         """
@@ -542,7 +548,7 @@ class Brain:
             CONTENT BULLET POINTS: {', '.join(data.get('bullet_points', [])[:3])}
             """
         )
-        print(f"data for content generation: {prompt}")
+        if(self.debug): print(f"data for content generation: {prompt}")
         prompt += textwrap.dedent(
         """
         Create a logical knowledge hierarchy that for the given query and content:
@@ -560,18 +566,18 @@ class Brain:
             "items": {"type": "string"},
         }
         output = self.sync_llm_call(prompt, temp=0.4, output_type="json_object", json_schema=json_schema)
-        print(f"[Brain] topic path generation output: {output}")
+        if(self.debug): print(f"[Brain] topic path generation output: {output}")
         try:
             path = json.loads(output.strip())
             if isinstance(path, list) and all(isinstance(item, str) for item in path) and len(path) >= 2:
-                print(f"[Brain] generated structured path: {path}")
+                if(self.debug): print(f"[Brain] generated structured path: {path}")
                 return path
         except json.JSONDecodeError:
-            print(f"[Brain] Failed to parse JSON from topic path generation: {output}")
+            if(self.debug): print(f"[Brain] Failed to parse JSON from topic path generation: {output}")
             pass
         
         # Fallback: create a simple path based on the query
-        print("[Brain] Using fallback topic path generation")
+        if(self.debug): print("[Brain] Using fallback topic path generation")
         fallback_path = ["General", "Web Content"]
         if query:
             # Try to extract a topic from the query
@@ -593,17 +599,17 @@ class Brain:
         Returns:
             A list of dictionaries containing relevant context chunks from the memory tree.
         """
-        print(f"[Brain] retrieving context for query: '{query}'")
+        if(self.debug): print(f"[Brain] retrieving context for query: '{query}'")
         try:
             node_count = len([self.memory] + self.memory.get_all_descendants())
             
             if node_count < k:
-                print("[Brain] memory tree is empty or nearly empty using web search")
+                if(self.debug): print("[Brain] memory tree is empty or nearly empty using web search")
                 return []
             
             contexts = self.get_relevant_context(query, max_results=k*3)
 
-            print(f"[Brain] found {len(contexts)} context chunks")
+            if(self.debug): print(f"[Brain] found {len(contexts)} context chunks")
 
             if contexts:
                 unique_contexts = []
@@ -618,24 +624,24 @@ class Brain:
 
                         fingerprint = desc[:40].strip().lower()
                         if fingerprint in description_set:
-                            print(f"[Brain] skipping duplicate context: {fingerprint}")
+                            if(self.debug): print(f"[Brain] skipping duplicate context: {fingerprint}")
                             continue
                         
                         description_set.add(fingerprint)
                         unique_contexts.append(ctx)
                                          
                 results = unique_contexts[:k]
-                print(f"[Brain] returning top {len(results)} unique context chunks")
+                if(self.debug): print(f"[Brain] returning top {len(results)} unique context chunks")
                 return results
             else:
-                print("[Brain] no relevant context found")
+                if(self.debug): print("[Brain] no relevant context found")
                 #dont call web search here bc it could cause an infinite loop if something is broken
                 return []
             
         except Exception as e:
             import traceback
-            print(f"[Brain] error during context retrieval: {e}")
-            print(f"Stack trace:\n{traceback.format_exc()}")
+            if(self.debug): print(f"[Brain] error during context retrieval: {e}")
+            if(self.debug): print(f"Stack trace:\n{traceback.format_exc()}")
     def _print_tree(self, node: SupabaseTopicNode, indent: str = " ") -> None:
         """
         Pretty-print the SupabaseTopicNode hierarchy.
@@ -644,7 +650,7 @@ class Brain:
             node: The current node in the tree to print.
             indent: The indentation string for pretty-printing.
         """
-        print(f"{indent}- {node.topic}")
+        if(self.debug): print(f"{indent}- {node.topic}")
         for child in node.children:
             Brain._print_tree(child, indent + indent)
 
@@ -661,7 +667,7 @@ class Brain:
             bool: True if the context is relevant to the query, False otherwise.
         """
         if context:
-            print("[Brain] checking context relevance...")
+            if(self.debug): print("[Brain] checking context relevance...")
             
             # Extract main topic words from query (lowercase words with at least 3 chars) some exceptions could be LA or US or UK, but usually the memory tree will have these spelled out as "Los Angeles", "United States", "United Kingdom" etc.
             main_topic_words = set(re.findall(r'\b[a-z]{3,}\b', query.lower()))
@@ -672,7 +678,7 @@ class Brain:
             if len(main_topic_words) <= 2:
                 # For very short queries accept any context that has at least one matching word
 
-                print(f"[Brain] short query detected with only {len(main_topic_words)} key words")
+                if(self.debug): print(f"[Brain] short query detected with only {len(main_topic_words)} key words")
 
                 for item in context:
                     if not isinstance(item, dict):
@@ -694,7 +700,7 @@ class Brain:
                             
                     for phrase in main_phrases:
                         if phrase in context_text:
-                            print(f"[Brain] short query matched exact phrase: {phrase}")
+                            if(self.debug): print(f"[Brain] short query matched exact phrase: {phrase}")
                             return True
                 
                 return False
@@ -725,22 +731,22 @@ class Brain:
                         # Strongly boost score if we have exact phrase matches which are more meaningful
                         for phrase in main_phrases:
                             if phrase in context_text:
-                                print(f"[Brain] matched exact phrase: {phrase}")
+                                if(self.debug): print(f"[Brain] matched exact phrase: {phrase}")
                                 context_relevance_scores[-1] += 0.3
                 
                 if context_relevance_scores:
                     avg_relevance = sum(context_relevance_scores) / len(context_relevance_scores)
                     # Cap at 1.0 for cleaner reporting
                     avg_relevance = min(avg_relevance, 1.0)
-                    print(f"[Brain] context relevance score: {avg_relevance:.2f}")
+                    if(self.debug): print(f"[Brain] context relevance score: {avg_relevance:.2f}")
                     
                     #TODO: test this threshold, right now it is low to keep the system responsive
                     is_relevant = avg_relevance > 0.07  # 7% overlap of query words with context
 
                     if is_relevant:
-                        print("[Brain] context is relevant to the query")
+                        if(self.debug): print("[Brain] context is relevant to the query")
                     else:
-                        print("[Brain] context is NOT relevant to the query, need to search")
+                        if(self.debug): print("[Brain] context is NOT relevant to the query, need to search")
                         
                     return is_relevant
                 
@@ -755,12 +761,12 @@ class Brain:
         Returns:
             str: The generated answer to the user's question.
         """
-        print(f"[Brain] processing question: '{user_question}'")
+        if(self.debug): print(f"[Brain] processing question: '{user_question}'")
         
         # Check if this is a personal opinion/preference question and skip web searching for these
         is_opinion_question = self._is_opinion_question(user_question)
         if is_opinion_question:
-            print("[Brain] detected opinion/preference question, generating personalized response")
+            if(self.debug): print("[Brain] detected opinion/preference question, generating personalized response")
             response = self._generate_opinion(user_question)
             return response
         
@@ -768,38 +774,38 @@ class Brain:
         is_followup = self._is_followup_question(user_question)
         if is_followup:
             # access supabase_chat_history to get the recent context
-            print("[Brain] detected follow up question, retrieving recent context")
+            if(self.debug): print("[Brain] detected follow up question, retrieving recent context")
             recent_context = []
         
-        print("[Brain] checking internal memory...")
+        if(self.debug): print("[Brain] checking internal memory...")
         context = self._retrieve_context(user_question, k=5)
         
         if context and self._is_context_relevant(user_question, context):
-            print(f"[Brain] found {len(context)} relevant contexts in memory")
-            print("[Brain] internal context sufficient.")
+            if(self.debug): print(f"[Brain] found {len(context)} relevant contexts in memory")
+            if(self.debug): print("[Brain] internal context sufficient.")
             
             #debug print context
             for i, ctx in enumerate(context):
                 desc = ctx.get('description', '')[:100] + '...' if ctx.get('description') else 'No description'
                 points = ctx.get('bullet_points', [])
                 point_preview = points[0][:50] + '...' if points and isinstance(points[0], str) and len(points[0]) > 50 else points[0] if points else 'No bullet points'
-                print(f"[Brain] Answer Context {i+1}: {desc}")
-                print(f"[Brain] Answer Context {i+1} Point: {point_preview}")
+                if(self.debug): print(f"[Brain] Answer Context {i+1}: {desc}")
+                if(self.debug): print(f"[Brain] Answer Context {i+1} Point: {point_preview}")
             
             recent_context = recent_context if is_followup else []
             response = self._generate_answer(user_question, context, recent_context)
             return response
         else:
             if context:
-                print("[Brain] found some context but it's not sufficient, proceeding to web search")
+                if(self.debug): print("[Brain] found some context but it's not sufficient, proceeding to web search")
             else:
-                print("[Brain] no relevant context found in memory, proceeding to web search")
+                if(self.debug): print("[Brain] no relevant context found in memory, proceeding to web search")
             
             search_q = self._rewrite_query(user_question)
-            print(f"[Brain] search query rewritten to: '{search_q}'")
+            if(self.debug): print(f"[Brain] search query rewritten to: '{search_q}'")
             
             search_hits = self._search(search_q, max_results=max_search_results)
-            print(f"[Brain] found {len(search_hits)} search results")
+            if(self.debug): print(f"[Brain] found {len(search_hits)} search results")
             
             # Capture the return value from the async function
             response = asyncio.run(self.process_search_results_parallel(search_hits, user_question))
@@ -839,19 +845,19 @@ class Brain:
         
         # Very short questions are often follow-ups
         if len(question.split()) <= 3 and not question.startswith("what is") and not question.startswith("how to"):
-            print(f"[Brain] detected follow-up question (short question): '{question}'")
+            if(self.debug): print(f"[Brain] detected follow-up question (short question): '{question}'")
             return True
             
         for indicator in followup_indicators:
             if f" {indicator} " in f" {question} " or question.startswith(indicator + " "):
-                print(f"[Brain] detected follow-up question with pattern: '{indicator}'")
+                if(self.debug): print(f"[Brain] detected follow-up question with pattern: '{indicator}'")
                 return True
                 
         if len(question.split()) < 5:
             pronoun_indicators = ["it", "they", "them", "those", "these", "that", "this"]
             for pronoun in pronoun_indicators:
                 if f" {pronoun} " in f" {question} ":
-                    print(f"[Brain] detected follow-up question (short with pronoun): '{question}'")
+                    if(self.debug): print(f"[Brain] detected follow-up question (short with pronoun): '{question}'")
                     return True
         
         return False
@@ -893,7 +899,7 @@ class Brain:
         for indicator in opinion_indicators:
             question = question.replace("?", "").replace("'", "")
             if (indicator + " ") in (question + " "):
-                print(f"[Brain] detected opinion question with pattern: '{indicator}'")
+                if(self.debug): print(f"[Brain] detected opinion question with pattern: '{indicator}'")
                 return True
                 
         return False
@@ -911,7 +917,7 @@ class Brain:
         Returns:
             str: The generated response to the user's question.
         """
-        print(f"[Brain] generating opinion response for: '{question}'")
+        if(self.debug): print(f"[Brain] generating opinion response for: '{question}'")
         
         conversation_context = []
         is_first_opinion_question = True
@@ -929,7 +935,7 @@ class Brain:
                         opinion_count += 1
             
             is_first_opinion_question = opinion_count == 0
-            print(f"[Brain] detected {'new' if is_first_opinion_question else 'ongoing'} opinion conversation with {opinion_count} previous turns")
+            if(self.debug): print(f"[Brain] detected {'new' if is_first_opinion_question else 'ongoing'} opinion conversation with {opinion_count} previous turns")
 
         if not is_first_opinion_question and conversation_context:
             context_str = "\n\nCONVERSATION HISTORY:\n"
@@ -971,12 +977,12 @@ class Brain:
             
             response = response.strip('"')
             
-            print(f"[Brain] generated opinion response: {len(response)} chars")
+            if(self.debug): print(f"[Brain] generated opinion response: {len(response)} chars")
             
             return response
             
         except Exception as e:
-            print(f"[Brain] error generating opinion: {e}")
+            if(self.debug): print(f"[Brain] error generating opinion: {e}")
             
             if is_first_opinion_question:
                 return "Hey, that's a cool question! I'm still figuring out my thoughts on that. What kind of things do you like?"
@@ -1002,12 +1008,12 @@ class Brain:
         
         if not context_chunks:
             
-            print("[Brain] no context chunks available for answer generation")
+            if(self.debug): print("[Brain] no context chunks available for answer generation")
             
             return "Sorry dude. I don't have enough information to answer your question. I couldn't find relevant content in my memory or from web searches."
 
         
-        print(f"[Brain] generating answer using {len(context_chunks)} context chunks")
+        if(self.debug): print(f"[Brain] generating answer using {len(context_chunks)} context chunks")
                 
         formatted_context = []
         for i, chunk in enumerate(context_chunks):
@@ -1035,13 +1041,13 @@ class Brain:
         
         conversation_str = ""
         if conversation_context and len(conversation_context) > 0:
-            print(f"[Brain] including {len(conversation_context)} messages from conversation history")
+            if(self.debug): print(f"[Brain] including {len(conversation_context)} messages from conversation history")
             conversation_lines = []
             for msg in conversation_context:
                 speaker = "User" if msg["role"] == "user" else "Assistant"
                 conversation_lines.append(f"{speaker}: {msg['content']}")
             conversation_str = "\n".join(conversation_lines)
-            print(f"[Brain] conversation context length: {len(conversation_str)} chars")
+            if(self.debug): print(f"[Brain] conversation context length: {len(conversation_str)} chars")
         
         prompt = ""
         if conversation_str:
@@ -1075,7 +1081,7 @@ class Brain:
             ANSWER:"""
         )
         
-        print("[Brain] sending prompt to LLM for final answer generation")
+        if(self.debug): print("[Brain] sending prompt to LLM for final answer generation")
         """
             0.4 temp mistral small with prompt:
             You are Hozie, a voice assistant with a thoughtful, contemplative personality with a touch of creativity. Your goal is to provide an answer to the user's question using the information in the context, while adding some of your unique perspective where appropriate.
@@ -1123,10 +1129,10 @@ class Brain:
             ans = chat_response.choices[0].message.content        
             final_answer = ans.strip()
             
-            print(f"[Brain] extracted final answer: {len(final_answer)} chars")
+            if(self.debug): print(f"[Brain] extracted final answer: {len(final_answer)} chars")
             return final_answer
         except Exception as e:
-            print(f"[Brain] error during answer generation: {e}")
+            if(self.debug): print(f"[Brain] error during answer generation: {e}")
             return "I encountered an error while trying to generate an answer based on the information I found. Please try asking your question again."
 
 
@@ -1160,7 +1166,7 @@ class Brain:
             return chat_response.choices[0].message.content
             
         except Exception as e:
-            print(f"[Brain] LLM call failed: {e}")
+            if(self.debug): print(f"[Brain] LLM call failed: {e}")
             return "Error generating response"
 
     def sync_llm_call(self, prompt: str, temp: float, output_type: Optional[str] = None, json_schema: Optional[Dict[str, Any]] = None) -> str:
@@ -1197,13 +1203,15 @@ class Brain:
             return chat_response.choices[0].message.content
             
         except Exception as e:
-            print(f"[Brain] Sync LLM call failed: {e}")
+            if(self.debug): print(f"[Brain] Sync LLM call failed: {e}")
             return "Error generating response"
 
     def get_relevant_context(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """
         Efficient context search using DFS with relevance-based pruning.
         Only explores branches that show relevance to avoid traversing the entire tree and make time complexity closer to O(lgn). LLM generation should be close to constant time with the short prompt. In the future will make a fine tuned model to make this more true.
+
+        LLM generation is NOT constant time lol it takes forever so disabling it for now and doing a regular dfs
         
         Args:
             query: Search query
@@ -1213,11 +1221,13 @@ class Brain:
             List of relevant context items sorted by relevance
         """
         
+        
         keywords = self._get_likely_keywords_from_llm(query)
+        
         if not keywords:
-            print(f"[Brain] No keywords generated from LLM, falling back to basic keyword extraction for query: '{query}'")
+            if(self.debug): print(f"[Brain] No keywords generated from LLM, falling back to basic keyword extraction for query: '{query}'")
             keywords = set(re.findall(r'\w+', query.lower()))
-        print(f"[Brain] Searching for keywords: {keywords}")
+        if(self.debug): print(f"[Brain] Searching for keywords: {keywords}")
 
         def is_node_relevant(node: 'SupabaseTopicNode') -> bool:
             """
@@ -1230,6 +1240,9 @@ class Brain:
             Returns:
                 bool: True if the node is relevant based on keywords, False otherwise.
             """
+
+            #For now just skipping this step and doing a full dfs since llm calls take a super long time
+            return True
             title = node.topic.lower() if hasattr(node, 'topic') else ''
             
             for kw in keywords:
@@ -1264,13 +1277,8 @@ class Brain:
                 return 0.0
                 
             data_text = node.data.get("description", "")
-            bullet_points = node.data.get("bullet_points", [])
             title = node.topic if hasattr(node, 'topic') else ''
-            
-            all_text = f"{title} {data_text}"
-            if isinstance(bullet_points, list):
-                all_text += " " + " ".join(str(point) for point in bullet_points)
-            
+            all_text = f"{title} + {data_text}"
             all_text = all_text.lower()
             
             keyword_matches = 0
@@ -1288,11 +1296,10 @@ class Brain:
                 
             base_score = keyword_matches / total_keywords
             
-            depth = node.get_depth()
             content_boost = min(len(data_text) / 500.0, 1.0)  # Normalize content length
-            depth_boost = min(depth / 5.0, 1.0)  # Deeper nodes get slight boost
             
-            final_score = base_score + (content_boost * 0.2) + (depth_boost * 0.1)
+            
+            final_score = base_score + (content_boost * 0.2)
             final_score = min(final_score, 1.0)  # Cap at 1.0
             
             return final_score
@@ -1314,13 +1321,13 @@ class Brain:
             visited.add(node.node_id)
             
             if is_node_relevant(node):
-                print(f"[Brain] Exploring relevant node: '{node.topic}'")
+                if(self.debug): print(f"[Brain] Exploring relevant node: '{node.topic}'")
                 
                 if isinstance(node.data, dict) and node.data:
                     score = calculate_relevance_score(node)
                     if score > 0.0:
                         scored_nodes.append((score, node.data, node.topic))
-                        print(f"[Brain] Found relevant: '{node.topic}' (score: {score:.3f})")
+                        if(self.debug): print(f"[Brain] Found relevant: '{node.topic}' (score: {score:.3f})")
                 
                 # Continue DFS on all children since this branch is relevant
                 for child in node.children:
@@ -1341,7 +1348,7 @@ class Brain:
         visited = set()
         scored_nodes = []
         
-        print(f"[Brain] Starting DFS search from root: '{self.memory.topic}'")
+        if(self.debug): print(f"[Brain] Starting DFS search from root: '{self.memory.topic}'")
         dfs_search(self.memory, visited, scored_nodes)
         
         scored_nodes.sort(key=lambda x: x[0], reverse=True)
@@ -1349,7 +1356,7 @@ class Brain:
         # Return just the data from top results
         results = [item[1] for item in scored_nodes[:max_results]]
         
-        print(f"[Brain] DFS explored {len(visited)} nodes, found {len(scored_nodes)} relevant, returning top {len(results)}")
+        if(self.debug): print(f"[Brain] DFS explored {len(visited)} nodes, found {len(scored_nodes)} relevant, returning top {len(results)}")
         return results
 
     def _get_likely_keywords_from_llm(self, query: str) -> set:
@@ -1363,7 +1370,7 @@ class Brain:
             set: Set of keywords generated by the LLM, or an empty set if generation fails
         """
         prompt = textwrap.dedent(f"""
-            Return ONLY a JSON Array of 20 possible categories that this query could fit into. Make sure to include 'Politics' for any query that references a place. Include 'Current Events' for any question that is asking about something happening now or recently. Make sure to include country names or any other very broad topics that could be related to the query too.
+            Return ONLY a JSON Array of 30 possible categories that this query could fit into. Make sure to include 'Politics' for any query that references a place. Include 'Current Events' for any question that is asking about something happening now or recently. Make sure to include country names or any other very broad topics that could be related to the query too.
             Query: {query}
             """
         )
@@ -1373,22 +1380,22 @@ class Brain:
         }
 
         output = self.sync_llm_call(prompt, temp=0.2, output_type='json_object', json_schema=json_schema)
-        print(f"[Brain] raw keywords output: {output}")
+        if(self.debug): print(f"[Brain] raw keywords output: {output}")
         
         try:
             keywords = json.loads(output.strip())
             if (isinstance(keywords, list) and all(isinstance(item, str) for item in keywords) and len(keywords) >= 2):
                 keywords.append("Knowledge Base")
-                print(f"[Brain] generated keywords: {keywords}")
+                if(self.debug): print(f"[Brain] generated keywords: {keywords}")
                 return keywords
         except json.JSONDecodeError:
-            print(f"[Brain] failed to parse JSON from output: {output}")
+            if(self.debug): print(f"[Brain] failed to parse JSON from output: {output}")
             # Fallback to simple keyword extraction if LLM fails
             keywords = set(re.findall(r'\w+', query.lower()))
             if not keywords:
-                print(f"[Brain] no keywords found in query: {query}")
+                if(self.debug): print(f"[Brain] no keywords found in query: {query}")
                 return set()
-        print(f"[Brain] generated {len(keywords)} sub-topics for '{query}': {keywords}")
+        if(self.debug): print(f"[Brain] generated {len(keywords)} sub-topics for '{query}': {keywords}")
         return keywords
 
     def explore_topics_autonomously(self, base_topics: Optional[List[str]] = None, *, max_depth: int = 3, breadth: int = 5, max_total_topics: int = 50, subtopics_per_topic: int = 5, delay: float = 0.5, max_search_results: int = 5) -> List[str]:
@@ -1414,14 +1421,14 @@ class Brain:
 
         if base_topics:
             queue.extend([(t, 0) for t in base_topics[:breadth]])
-            print(f"[Brain] seeding with user-supplied base topics: {base_topics[:breadth]}")
+            if(self.debug): print(f"[Brain] seeding with user-supplied base topics: {base_topics[:breadth]}")
         else:
             default_roots = [
                 "Science", "Technology", "Mathematics", "History", "Art",
                 "Economics", "Psychology", "Biology", "Physics", "Computer Science"
             ]
             queue.extend([(t, 0) for t in random.sample(default_roots, k=min(breadth, len(default_roots)))])
-            print(f"[Brain] seeding with default academic domains: {[q[0] for q in queue]}")
+            if(self.debug): print(f"[Brain] seeding with default academic domains: {[q[0] for q in queue]}")
 
         def _generate_subtopics(topic: str, k: int) -> List[str]:
             prompt = textwrap.dedent(f"""
@@ -1433,18 +1440,18 @@ class Brain:
             }
             #higher temp of 0.7 to encourage exploration over exploitation
             output = self.sync_llm_call(prompt, temp=0.4, output_type="json_object", json_schema=json_schema)
-            print(f"[Brain] generated sub-topics for '{topic}': {output}")
+            if(self.debug): print(f"[Brain] generated sub-topics for '{topic}': {output}")
             subtopics = []
             try:
                 subtopics = json.loads(output.strip())
                 if isinstance(subtopics, list) and all(isinstance(item, str) for item in subtopics) and len(subtopics) >= 2:
-                    print(f"[Brain] generated subtopics: {subtopics}")
+                    if(self.debug): print(f"[Brain] generated subtopics: {subtopics}")
                     return subtopics
             except json.JSONDecodeError:
-                print(f"[Brain] JSON decode error for topic '{topic}': {output}")
-            print(f"[Brain] generated {len(subtopics)} sub-topics for '{topic}': {subtopics}")
+                if(self.debug): print(f"[Brain] JSON decode error for topic '{topic}': {output}")
+            if(self.debug): print(f"[Brain] generated {len(subtopics)} sub-topics for '{topic}': {subtopics}")
             if(len(subtopics) < k):
-                print(f"[Brain] Warning: fewer sub-topics generated than requested ({len(subtopics)} < {k}) for topic '{topic}'")
+                if(self.debug): print(f"[Brain] Warning: fewer sub-topics generated than requested ({len(subtopics)} < {k}) for topic '{topic}'")
                 return subtopics
             return subtopics[:k]  
 
@@ -1453,12 +1460,12 @@ class Brain:
             topic, d = queue.pop(0)
             question = f"Tell me about {topic}" if not topic.endswith('?') else topic
 
-            print(f"[Brain] ▸ exploring (depth {d}) - {question}")
+            if(self.debug): print(f"[Brain] ▸ exploring (depth {d}) - {question}")
             try:
                 self.answer(question, max_search_results=max_search_results) 
                 explored.append(question)
             except Exception as e:
-                print(f"[Brain] ⚠️ exploration error: {e}")
+                if(self.debug): print(f"[Brain] ⚠️ exploration error: {e}")
 
             if d >= max_depth or len(explored) >= max_total_topics:
                 continue
@@ -1473,7 +1480,7 @@ class Brain:
 
             time.sleep(delay)
 
-        print(f"[Brain] exploration complete - {len(explored)} topics added to memory")
+        if(self.debug): print(f"[Brain] exploration complete - {len(explored)} topics added to memory")
         return explored
     
     async def process_search_results_parallel(self, search_hits, user_question: str):
@@ -1481,16 +1488,16 @@ class Brain:
         
         async def process_single_hit(hit: Dict, index: int) -> Optional[Dict]:
             """Process a single search hit: scrape content"""
-            print(f"[Brain] processing result {index+1}/{len(search_hits)}: {hit['title']}")
-            print(f"[Brain] URL: {hit['url']}")
+            if(self.debug): print(f"[Brain] processing result {index+1}/{len(search_hits)}: {hit['title']}")
+            if(self.debug): print(f"[Brain] URL: {hit['url']}")
             
             raw = await asyncio.get_event_loop().run_in_executor(None, self._scrape, hit["url"])
             
             if not raw:
-                print(f"[Brain] no content scraped from {hit['url']}")
+                if(self.debug): print(f"[Brain] no content scraped from {hit['url']}")
                 return None
                 
-            print(f"[Brain] scraped {len(raw)} chars from {hit['url']}")
+            if(self.debug): print(f"[Brain] scraped {len(raw)} chars from {hit['url']}")
             
             return {
                 "url": hit["url"],
@@ -1505,11 +1512,11 @@ class Brain:
         successful_results = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                print(f"[Brain] error processing result {i+1}: {str(result)}")
+                if(self.debug): print(f"[Brain] error processing result {i+1}: {str(result)}")
             elif result is not None:
                 successful_results.append(result)
         
-        print(f"[Brain] successfully processed {len(successful_results)} out of {len(search_hits)} search results")
+        if(self.debug): print(f"[Brain] successfully processed {len(successful_results)} out of {len(search_hits)} search results")
         
         # If no successful results, return early
         if not successful_results:
@@ -1523,8 +1530,8 @@ class Brain:
         # Prepare summarization prompt
         prompt = f"{formatted_websites}"
         
-        print("[Brain] sending multi-website summarization prompt")
-        print(f"[Brain] processing multi-website summary")
+        if(self.debug): print("[Brain] sending multi-website summarization prompt")
+        if(self.debug): print(f"[Brain] processing multi-website summary")
 
         try:
             # Use Mistral to generate the summaries
@@ -1540,7 +1547,7 @@ class Brain:
             )
             
             response = chat_response.choices[0].message.content
-            print(f"[Brain] multi-website summary response {response}")
+            if(self.debug): print(f"[Brain] multi-website summary response {response}")
             # Parse the JSON response
             structured_results = json.loads(response)
             
@@ -1555,7 +1562,7 @@ class Brain:
                             executor, self._generate_topic_path, user_question, summary.get("main_idea", "Unknown"), summary
                         )
                     
-                    print(f"[Brain] storing under path: {'/'.join(path)}")
+                    if(self.debug): print(f"[Brain] storing under path: {'/'.join(path)}")
                     
                     # Store the memory using a thread pool executor
                     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -1565,31 +1572,31 @@ class Brain:
                     
                     return True
                 except Exception as e:
-                    print(f"[Brain] failed to store result: {str(e)}")
+                    if(self.debug): print(f"[Brain] failed to store result: {str(e)}")
                     return False
             
-            print(f"[Brain] storing {len(structured_results)} summary results")
+            if(self.debug): print(f"[Brain] storing {len(structured_results)} summary results")
 
             if structured_results:
                 store_tasks = [store_single_result(item) for item in structured_results]
                 store_results = await asyncio.gather(*store_tasks, return_exceptions=True)
                 
                 successful_stores = sum(1 for result in store_results if result is True)
-                print(f"[Brain] stored information from {successful_stores}/{len(structured_results)} search results")
+                if(self.debug): print(f"[Brain] stored information from {successful_stores}/{len(structured_results)} search results")
 
             # Retrieve again with fresh data
-            print("[Brain] retrieving context with fresh data...")
+            if(self.debug): print("[Brain] retrieving context with fresh data...")
             context = self._retrieve_context(user_question, k=5)
-            print(f"[Brain] found {len(context)} contexts for final answer generation")
+            if(self.debug): print(f"[Brain] found {len(context)} contexts for final answer generation")
             
-            print("[Brain] generating final answer...")
+            if(self.debug): print("[Brain] generating final answer...")
             response = self._generate_answer(user_question, context, [])
-            print(f"[Brain] answer generated ({len(response)} chars)")
+            if(self.debug): print(f"[Brain] answer generated ({len(response)} chars)")
             
             return response
             
         except Exception as e:
-            print("[Brain] failed to search web: ", e)
+            if(self.debug): print("[Brain] failed to search web: ", e)
             return "My bad bro I couldn't find any information on that topic. You can try rephrasing your question."
 
 if __name__ == "__main__":
