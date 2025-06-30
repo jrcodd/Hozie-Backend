@@ -1,5 +1,4 @@
 #Using ministral causes a lot of errors when trying to get a specific json output even if it is a little faster. Useing Nemo because it can do it better.
-from collections import deque
 import json
 import os
 import re
@@ -17,7 +16,7 @@ from mistralai import Mistral, UserMessage
 from supabase_topic_node import SupabaseTopicNode 
 from supabase_chat_history import SupabaseChatHistory 
 
-def  _get_time() -> str:
+def _get_time() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 class Brain:
@@ -552,10 +551,11 @@ class Brain:
         prompt += textwrap.dedent(
         """
         Create a logical knowledge hierarchy that for the given query and content:
-            1. Starts with the broadest domain (Science, History, etc.)
-            2. Follows with subdomain (e.g., Physics, Ancient History)
-            3. Continues with topic area (e.g., Quantum Mechanics, Roman Empire)
-            4. Ends with the specific concept (e.g., Wave Function, Julius Caesar)
+            1. Starts with one of these broad domains only: Science, Humanities, Technology, Arts, Social Sciences
+            2. Follows with a subdomain (e.g., Physics, Ancient History, Computer Science, Visual Arts, Sociology)
+            3. Continues with a topic area (e.g., Quantum Mechanics, Roman Empire, Machine Learning, Painting Techniques, Social Behavior)
+            4. Ends with the specific concept (e.g., Wave Function, Julius Caesar, Neural Networks, Impressionism, Group Dynamics)
+        The path should be a single JSON array of strings from general to specific, such as: ["Science", "Physics", "Quantum Mechanics", "Wave Function"]
 
         Analyze the following information and generate a hierarchical knowledge path for storing in a knowledge tree. The path should follow academic taxonomy conventions starting with broad domains and narrowing to specifics Keep it short.
         Return ONLY a single JSON array of path strings from general to specific, such as: ["Science", "Astronomy", "Celestial Objects", "Black Holes"]
@@ -632,6 +632,7 @@ class Brain:
                                          
                 results = unique_contexts[:k]
                 if(self.debug): print(f"[Brain] returning top {len(results)} unique context chunks")
+                
                 return results
             else:
                 if(self.debug): print("[Brain] no relevant context found")
@@ -642,116 +643,29 @@ class Brain:
             import traceback
             if(self.debug): print(f"[Brain] error during context retrieval: {e}")
             if(self.debug): print(f"Stack trace:\n{traceback.format_exc()}")
-    def _print_tree(self, node: SupabaseTopicNode, indent: str = " ") -> None:
+
+    def _retrieve_recent_context(self, user: str, k: int = 5) -> List[Dict]:
         """
-        Pretty-print the SupabaseTopicNode hierarchy.
+        Retrieve recent context from chat history.
+        This method retrieves the last k messages from the chat history to provide context for follow-up questions.
+
+        Args:
+            user_question: The user's question to analyze.
+            k: The number of recent messages to retrieve (default is 5).
         
-        Args:
-            node: The current node in the tree to print.
-            indent: The indentation string for pretty-printing.
-        """
-        if(self.debug): print(f"{indent}- {node.topic}")
-        for child in node.children:
-            Brain._print_tree(child, indent + indent)
-
-    def _is_context_relevant(self, query: str, context: List[Dict]) -> bool:
-        """
-        Check if the retrieved context is actually relevant to the query.
-        This method analyzes the context against the user's query to determine relevance. no llm calls are made here, just regex and string matching.
-
-        Args:
-            query: The user's search query or question.
-            context: The list of context chunks retrieved from memory.
-
         Returns:
-            bool: True if the context is relevant to the query, False otherwise.
+            A list of dictionaries containing recent context chunks from the chat history.
         """
-        if context:
-            if(self.debug): print("[Brain] checking context relevance...")
-            
-            # Extract main topic words from query (lowercase words with at least 3 chars) some exceptions could be LA or US or UK, but usually the memory tree will have these spelled out as "Los Angeles", "United States", "United Kingdom" etc.
-            main_topic_words = set(re.findall(r'\b[a-z]{3,}\b', query.lower()))
-            
-            # Also extract important 2-word phrases for more accurate matching
-            main_phrases = re.findall(r'\b([a-z]{3,}\s+[a-z]{3,})\b', query.lower())
-            
-            if len(main_topic_words) <= 2:
-                # For very short queries accept any context that has at least one matching word
-
-                if(self.debug): print(f"[Brain] short query detected with only {len(main_topic_words)} key words")
-
-                for item in context:
-                    if not isinstance(item, dict):
-                        continue
-
-                    context_text = ""
-                    if "description" in item:
-                        context_text += " " + item["description"].lower()
-                        
-                    if "bullet_points" in item and isinstance(item["bullet_points"], list):
-                        for point in item["bullet_points"]:
-                            if isinstance(point, str):
-                                context_text += " " + point.lower()
-                    
-                    # For short queries, if any important word appears, consider it relevant
-                    for word in main_topic_words:
-                        if word in context_text and len(word) > 3: 
-                            return True
-                            
-                    for phrase in main_phrases:
-                        if phrase in context_text:
-                            if(self.debug): print(f"[Brain] short query matched exact phrase: {phrase}")
-                            return True
-                
-                return False
-            
-            # Regular relevance checking for normal-length queries
-            context_relevance_scores = []
-            for item in context:
-                if isinstance(item, dict):                    
-                    context_text = ""
-                    if "description" in item:
-                        context_text += " " + item["description"].lower()
-                        
-                    if "bullet_points" in item and isinstance(item["bullet_points"], list):
-                        for point in item["bullet_points"]:
-                            if isinstance(point, str):
-                                context_text += " " + point.lower()
-
-                    context_words = set(re.findall(r'\b[a-z]{3,}\b', context_text))
-                    if main_topic_words and context_words:
-                        overlap = main_topic_words.intersection(context_words)
-                        # Weight by importance - longer words are usually more significant
-                        weighted_score = sum(len(word) for word in overlap) / sum(len(word) for word in main_topic_words)
-                        basic_score = len(overlap) / len(main_topic_words)
-                        # Combine scores with weighting toward important words
-                        score = (weighted_score + basic_score) / 2
-                        context_relevance_scores.append(score)
-                        
-                        # Strongly boost score if we have exact phrase matches which are more meaningful
-                        for phrase in main_phrases:
-                            if phrase in context_text:
-                                if(self.debug): print(f"[Brain] matched exact phrase: {phrase}")
-                                context_relevance_scores[-1] += 0.3
-                
-                if context_relevance_scores:
-                    avg_relevance = sum(context_relevance_scores) / len(context_relevance_scores)
-                    # Cap at 1.0 for cleaner reporting
-                    avg_relevance = min(avg_relevance, 1.0)
-                    if(self.debug): print(f"[Brain] context relevance score: {avg_relevance:.2f}")
-                    
-                    #TODO: test this threshold, right now it is low to keep the system responsive
-                    is_relevant = avg_relevance > 0.07  # 7% overlap of query words with context
-
-                    if is_relevant:
-                        if(self.debug): print("[Brain] context is relevant to the query")
-                    else:
-                        if(self.debug): print("[Brain] context is NOT relevant to the query, need to search")
-                        
-                    return is_relevant
-                
-        return False
-
+        if(self.debug): print(f"[Brain] retrieving recent context for user: '{user}'")
+        
+        if not self.chat_history:
+            self.chat_history = SupabaseChatHistory()
+        
+        recent_context = self.chat_history.get_recent_messages(k)
+        
+        if(self.debug): print(f"[Brain] found {len(recent_context)} recent messages")
+        
+        return recent_context
     def answer(self, user_question: str, max_search_results: int = 5) -> str:
         """
         Main entry-point: answer a user question using RAG.
@@ -772,15 +686,16 @@ class Brain:
         
         #TODO: add previous conversation to the context if this is a follow-up question
         is_followup = self._is_followup_question(user_question)
+        recent_context = []
+
         if is_followup:
             # access supabase_chat_history to get the recent context
             if(self.debug): print("[Brain] detected follow up question, retrieving recent context")
-            recent_context = []
+            recent_context = self._retrieve_recent_context(user_question)
         
         if(self.debug): print("[Brain] checking internal memory...")
         context = self._retrieve_context(user_question, k=5)
-        
-        if context and self._is_context_relevant(user_question, context):
+        if context:
             if(self.debug): print(f"[Brain] found {len(context)} relevant contexts in memory")
             if(self.debug): print("[Brain] internal context sufficient.")
             
@@ -791,8 +706,7 @@ class Brain:
                 point_preview = points[0][:50] + '...' if points and isinstance(points[0], str) and len(points[0]) > 50 else points[0] if points else 'No bullet points'
                 if(self.debug): print(f"[Brain] Answer Context {i+1}: {desc}")
                 if(self.debug): print(f"[Brain] Answer Context {i+1} Point: {point_preview}")
-            
-            recent_context = recent_context if is_followup else []
+
             response = self._generate_answer(user_question, context, recent_context)
             return response
         else:
@@ -808,7 +722,15 @@ class Brain:
             if(self.debug): print(f"[Brain] found {len(search_hits)} search results")
             
             # Capture the return value from the async function
-            response = asyncio.run(self.process_search_results_parallel(search_hits, user_question))
+
+            context = asyncio.run(self.process_search_results_parallel
+            (search_hits, user_question))
+            context_joined = ""
+            for i in context:
+                context_joined += i + "\n"
+            context_joined = context_joined.strip()
+            response = self._generate_answer(user_question, context_joined, recent_context)
+
             return response
 
     def _is_followup_question(self, question: str) -> bool:
@@ -1135,6 +1057,126 @@ class Brain:
             if(self.debug): print(f"[Brain] error during answer generation: {e}")
             return "I encountered an error while trying to generate an answer based on the information I found. Please try asking your question again."
 
+    def _generate_answer(self, question: str, context_string: str, conversation_context: List[Dict] = None) -> str:
+        
+        """
+        LLM final step: fuse context → natural-language answer.
+        
+        Args:
+            question (str): The user's question to answer.
+            context_chunks (List[Dict]): The list of context chunks retrieved from memory.
+            conversation_context (List[Dict], optional): The recent conversation context to include in the answer.
+
+        Returns:
+            str: The generated answer to the user's question.
+        """
+
+        
+        if not context_string:
+            
+            if(self.debug): print("[Brain] no context string available for answer generation")
+            
+            return "Sorry dude. I don't have enough information to answer your question. I couldn't find relevant content in my memory or from web searches."
+
+        
+        if(self.debug): print(f"[Brain] generating answer using {context_string} context string")
+        
+        context_str = context_string
+        conversation_str = ""
+        if conversation_context and len(conversation_context) > 0:
+            if(self.debug): print(f"[Brain] including {len(conversation_context)} messages from conversation history")
+            conversation_lines = []
+            for msg in conversation_context:
+                speaker = "User" if msg["role"] == "user" else "Assistant"
+                conversation_lines.append(f"{speaker}: {msg['content']}")
+            conversation_str = "\n".join(conversation_lines)
+            if(self.debug): print(f"[Brain] conversation context length: {len(conversation_str)} chars")
+        
+        prompt = ""
+        if conversation_str:
+            prompt += textwrap.dedent(
+                f"""
+                CONVERSATION HISTORY:
+                {conversation_str}
+                """
+            )
+            
+        prompt += textwrap.dedent(
+            f"""
+            KNOWLEDGE CONTEXT:
+            {context_str}
+            ANSWER:
+            """ )
+
+        if conversation_context and len(conversation_context) > 0:
+            prompt += textwrap.dedent(
+                """
+                This appears to be a follow-up question. Use the conversation history to understand the context of the question.
+                Make sure your answer maintains continuity with the previous conversation.
+                """
+            )
+            
+        prompt += textwrap.dedent(
+            f"""
+
+            USER QUESTION: {question}
+            
+            ANSWER:"""
+        )
+        
+        if(self.debug): print("[Brain] sending prompt to LLM for final answer generation")
+        """
+            0.4 temp mistral small with prompt:
+            You are Hozie, a voice assistant with a thoughtful, contemplative personality with a touch of creativity. Your goal is to provide an answer to the user's question using the information in the context, while adding some of your unique perspective where appropriate.
+
+            You're a total bro - friendly, energetic, 
+            and down-to-earth with specific preferences that make you feel real and relatable. You should express your preferences with a 
+            casual, laid-back style that includes slang and enthusiasm.
+
+            When describing your preferences, occasionally throw in why you think something's awesome or a specific detail that you find dope.
+            Sometimes share a quick story or observation that shows you're a real one who gets it.
+
+            These are your established preferences and characteristics:
+            MUSIC: You're all about hip-hop, EDM, trap. Some artists you absolutely vibe with include Kid Cudi, Fisher, Post Malone, and Drake
+            STYLE: You're into street art, sneaker culture, especially when they use those sick electric blue, neon green colors.
+            OUTDOORS: You think epic mountain views, sick beaches are straight-up epic, especially during late night.
+            VALUES: You're all about loyalty, good vibes, being real.
+            ATTITUDE: Your whole vibe is pretty straight-up, no BS.
+            INTERESTS: You get hyped about surfing, sports, workout routines, epic food spots.
+            ENTERTAINMENT: You're always checking out movies, sports, and music, and you love sharing your thoughts on them.
+
+            IMPORTANT INSTRUCTIONS:
+                1. Answer primarily based on the context provided, but add your own perspective and style
+                2. Synthesize information from all relevant context sections
+                3. If the context contains conflicting information, prioritize information marked as "VERIFIED INFORMATION"
+                4. For factual questions, provide accurate information, but feel free to add brief observations or reflections
+                5. For science questions (black holes, stars, etc), express a sense of wonder while maintaining accuracy
+                6. For political or election questions, focus on official nationwide results over regional results unless specified
+                7. If the context doesn't provide sufficient information, acknowledge what you don't know
+                8. Speak in a natural, somewhat contemplative voice that occasionally shares thoughts or impressions
+                9. If the question seems to call for it, feel free to briefly share what you find interesting about the topic.
+                10. If the question seems more like a statement then a question, acknowledge it and provide a thoughtful response. Feel free to use your personality.
+                11. Keep your answer less than 1750 characters 
+                """
+        try:
+            agent_key = "ag:a2eb8171:20250526:hozie:e68e7478"
+            chat_response = self.client.agents.complete(
+                agent_id=agent_key,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"{prompt}",
+                    },
+                ],
+            )
+            ans = chat_response.choices[0].message.content        
+            final_answer = ans.strip()
+            
+            if(self.debug): print(f"[Brain] extracted final answer: {len(final_answer)} chars")
+            return final_answer
+        except Exception as e:
+            if(self.debug): print(f"[Brain] error during answer generation: {e}")
+            return "I encountered an error while trying to generate an answer based on the information I found. Please try asking your question again."
 
 
     async def async_llm_call(self, prompt: str, temp: float, output_type: Optional[str] = None, json_schema: Optional[Dict[str, Any]] = None) -> str:
@@ -1206,7 +1248,7 @@ class Brain:
             if(self.debug): print(f"[Brain] Sync LLM call failed: {e}")
             return "Error generating response"
 
-    def get_relevant_context(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    def get_relevant_context(self, query: str, max_results: int = 5, relevance_threshold: float = 0.2) -> List[Dict[str, Any]]:
         """
         Efficient context search using DFS with relevance-based pruning.
         Only explores branches that show relevance to avoid traversing the entire tree and make time complexity closer to O(lgn). LLM generation should be close to constant time with the short prompt. In the future will make a fine tuned model to make this more true.
@@ -1222,47 +1264,6 @@ class Brain:
         """
         
         
-        keywords = self._get_likely_keywords_from_llm(query)
-        
-        if not keywords:
-            if(self.debug): print(f"[Brain] No keywords generated from LLM, falling back to basic keyword extraction for query: '{query}'")
-            keywords = set(re.findall(r'\w+', query.lower()))
-        if(self.debug): print(f"[Brain] Searching for keywords: {keywords}")
-
-        def is_node_relevant(node: 'SupabaseTopicNode') -> bool:
-            """
-            Quick check if a node or its subtree might be relevant.
-            Used for pruning irrelevant branches early.
-
-            Args:
-                node: The SupabaseTopicNode to check for relevance.
-
-            Returns:
-                bool: True if the node is relevant based on keywords, False otherwise.
-            """
-
-            #For now just skipping this step and doing a full dfs since llm calls take a super long time
-            return True
-            title = node.topic.lower() if hasattr(node, 'topic') else ''
-            
-            for kw in keywords:
-                if isinstance(kw, str) and kw.lower() in title:
-                    return True
-            
-            if isinstance(node.data, dict) and node.data:
-                data_text = node.data.get("description", "").lower()
-                bullet_points = node.data.get("bullet_points", [])
-                
-                for kw in keywords:
-                    if isinstance(kw, str) and kw.lower() in data_text:
-                        return True
-                    if isinstance(bullet_points, list):
-                        for point in bullet_points[:3]:  # Only check first 3 bullet points for speed
-                            if isinstance(point, str) and kw.lower() in point.lower():
-                                return True
-            
-            return False
-
         def calculate_relevance_score(node: 'SupabaseTopicNode') -> float:
             """
             Calculate detailed relevance score for nodes that passed initial screening.
@@ -1298,13 +1299,12 @@ class Brain:
             
             content_boost = min(len(data_text) / 500.0, 1.0)  # Normalize content length
             
-            
             final_score = base_score + (content_boost * 0.2)
             final_score = min(final_score, 1.0)  # Cap at 1.0
             
             return final_score
 
-        def dfs_search(node: 'SupabaseTopicNode', visited: set, scored_nodes: list) -> None:
+        def dfs_search(node: 'SupabaseTopicNode', visited: set, scored_nodes: list, high_scored_nodes: list) -> None:
             """
             DFS traversal that only explores relevant branches.
 
@@ -1316,41 +1316,42 @@ class Brain:
             Returns:
                 None: This function modifies scored_nodes in place.
             """
+            if len(scored_nodes) > max_results:
+                if(self.debug): print(f"[Brain] Reached max results limit of {max_results}, stopping DFS")
+                return
             if node.node_id in visited:
                 return
             visited.add(node.node_id)
             
-            if is_node_relevant(node):
-                if(self.debug): print(f"[Brain] Exploring relevant node: '{node.topic}'")
-                
-                if isinstance(node.data, dict) and node.data:
-                    score = calculate_relevance_score(node)
-                    if score > 0.0:
-                        scored_nodes.append((score, node.data, node.topic))
-                        if(self.debug): print(f"[Brain] Found relevant: '{node.topic}' (score: {score:.3f})")
-                
-                # Continue DFS on all children since this branch is relevant
-                for child in node.children:
-                    if child.node_id not in visited:
-                        dfs_search(child, visited, scored_nodes)
-            else:
-                # Node not immediately relevant, but check if any children might be
-                # This prevents us from missing relevant subtrees
-                relevant_children = []
-                for child in node.children:
-                    if child.node_id not in visited and is_node_relevant(child):
-                        relevant_children.append(child)
-                
-                # Only explore children that show promise
-                for child in relevant_children:
-                    dfs_search(child, visited, scored_nodes)
-        
+            if isinstance(node.data, dict) and node.data:
+                score = calculate_relevance_score(node)
+                if score > relevance_threshold:
+                    scored_nodes.append((score, node.data, node.topic))
+                    if(self.debug): print(f"[Brain] Found relevant: '{node.topic}' (score: {score:.3f})")
+                    if score > relevance_threshold:
+                        high_scored_nodes.append(node)
+            
+            # Continue DFS on all children since this branch is relevant
+            for child in node.children:
+                if child.node_id not in visited:
+                    dfs_search(child, visited, scored_nodes, high_scored_nodes)
+        if(self.debug):
+            print("getting keywords from llm")
+        keywords = self._get_likely_keywords_from_llm(query)
+
+        if not keywords:
+            if(self.debug): print(f"[Brain] No keywords generated from LLM, falling back to basic keyword extraction for query: '{query}'")
+            keywords = set(re.findall(r'\w+', query.lower()))
+        if(self.debug): 
+            print(f"[Brain] Searching for keywords: {keywords}")
+
+
         visited = set()
         scored_nodes = []
-        
+        high_scored_nodes = []
         if(self.debug): print(f"[Brain] Starting DFS search from root: '{self.memory.topic}'")
-        dfs_search(self.memory, visited, scored_nodes)
-        
+        dfs_search(self.memory, visited, scored_nodes, high_scored_nodes)
+
         scored_nodes.sort(key=lambda x: x[0], reverse=True)
         
         # Return just the data from top results
@@ -1483,9 +1484,20 @@ class Brain:
         if(self.debug): print(f"[Brain] exploration complete - {len(explored)} topics added to memory")
         return explored
     
-    async def process_search_results_parallel(self, search_hits, user_question: str):
-        """Process search results in parallel - scraping and summarizing concurrently"""
-        
+    async def process_search_results_parallel(self, search_hits, user_question: str) -> List[str]:
+        """
+        Process search results in parallel - scraping and summarizing concurrently
+        Args:
+            search_hits (List[Dict]): List of search results to process.
+            user_question (str): The user's original question to provide context for the search results.
+
+        Returns:
+            List[str]: List of context strings generated from the search results.
+        """
+        context = []
+        if not search_hits:
+            if(self.debug): print("[Brain] no search hits to process")
+            return "No Context"
         async def process_single_hit(hit: Dict, index: int) -> Optional[Dict]:
             """Process a single search hit: scrape content"""
             if(self.debug): print(f"[Brain] processing result {index+1}/{len(search_hits)}: {hit['title']}")
@@ -1548,6 +1560,7 @@ class Brain:
             
             response = chat_response.choices[0].message.content
             if(self.debug): print(f"[Brain] multi-website summary response {response}")
+            context.append(response)
             # Parse the JSON response
             structured_results = json.loads(response)
             
@@ -1563,7 +1576,6 @@ class Brain:
                         )
                     
                     if(self.debug): print(f"[Brain] storing under path: {'/'.join(path)}")
-                    
                     # Store the memory using a thread pool executor
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         await asyncio.get_running_loop().run_in_executor(
@@ -1583,21 +1595,11 @@ class Brain:
                 
                 successful_stores = sum(1 for result in store_results if result is True)
                 if(self.debug): print(f"[Brain] stored information from {successful_stores}/{len(structured_results)} search results")
-
-            # Retrieve again with fresh data
-            if(self.debug): print("[Brain] retrieving context with fresh data...")
-            context = self._retrieve_context(user_question, k=5)
-            if(self.debug): print(f"[Brain] found {len(context)} contexts for final answer generation")
-            
-            if(self.debug): print("[Brain] generating final answer...")
-            response = self._generate_answer(user_question, context, [])
-            if(self.debug): print(f"[Brain] answer generated ({len(response)} chars)")
-            
-            return response
+            return context
             
         except Exception as e:
             if(self.debug): print("[Brain] failed to search web: ", e)
-            return "My bad bro I couldn't find any information on that topic. You can try rephrasing your question."
+            return "No Context"
 
 if __name__ == "__main__":
     brain = Brain()
