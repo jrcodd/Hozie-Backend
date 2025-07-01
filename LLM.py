@@ -804,7 +804,7 @@ class Brain:
                 print(f"[Brain] error generating opinion: {e}")
             return f"{e} That's interesting! I'm still processing that one. What else is on your mind?"
         
-    def _generate_answer(self, question: str, context_chunks: List[Dict], conversation_context: List[Dict] = None) -> str:
+    def _generate_answer(self, question: str, context_chunks: List[Dict], conversation_context: List[str, str] = None) -> str:
         """
         LLM final step: fuse context → natural-language answer.
         
@@ -849,48 +849,33 @@ class Brain:
         
         context_str = "\n\n".join(formatted_context)
         
-        conversation_str = ""
-        if conversation_context and len(conversation_context) > 0:
-            if(self.debug): print(f"[Brain] including {len(conversation_context)} messages from conversation history")
-            conversation_lines = []
+
+
+        prompt = f"QUESTION: {question}"
+
+        if len(conversation_context) > 0:
+            context_str = "\n\nCONVERSATION HISTORY:\n"
             for msg in conversation_context:
-                speaker = "User" if msg["role"] == "user" else "Assistant"
-                conversation_lines.append(f"{speaker}: {msg['content']}")
-            conversation_str = "\n".join(conversation_lines)
-            if(self.debug): print(f"[Brain] conversation context length: {len(conversation_str)} chars")
-        
-        prompt = ""
-        if conversation_str:
+                context_str += f"user: {msg[0]}\nyou: {msg[1]}\n"
+            prompt = context_str
+            if self.debug: 
+                print(f"[Brain] prompt: {prompt}")
+            prompt += "\n\n"
             prompt += textwrap.dedent(
                 f"""
-                CONVERSATION HISTORY:
-                {conversation_str}
+                The user's latest message is: "{question}"
+                
+                Write your response
                 """
             )
             
         prompt += textwrap.dedent(
             f"""
-            KNOWLEDGE CONTEXT:
+            \nKNOWLEDGE CONTEXT:
             {context_str}
             ANSWER:
-            """ )
+            """)
 
-        if conversation_context and len(conversation_context) > 0:
-            prompt += textwrap.dedent(
-                """
-                This appears to be a follow-up question. Use the conversation history to understand the context of the question.
-                Make sure your answer maintains continuity with the previous conversation.
-                """
-            )
-            
-        prompt += textwrap.dedent(
-            f"""
-
-            USER QUESTION: {question}
-            
-            ANSWER:"""
-        )
-        
         if(self.debug): print("[Brain] sending prompt to LLM for final answer generation")
         """
             0.4 temp mistral small with prompt:
@@ -945,8 +930,8 @@ class Brain:
             if(self.debug): print(f"[Brain] error during answer generation: {e}")
             return "I encountered an error while trying to generate an answer based on the information I found. Please try asking your question again."
 
-    def _generate_answer(self, question: str, context_string: str, conversation_context: List[Dict] = None) -> str:
-        
+    def _generate_answer(self, question: str, context_string: str, conversation_context: List[str, str] = None) -> str:
+
         """
         LLM final step: fuse context → natural-language answer.
         
@@ -969,48 +954,33 @@ class Brain:
         
         if(self.debug): print(f"[Brain] generating answer using {context_string} context string")
         
-        context_str = context_string
-        conversation_str = ""
-        if conversation_context and len(conversation_context) > 0:
-            if(self.debug): print(f"[Brain] including {len(conversation_context)} messages from conversation history")
-            conversation_lines = []
-            for msg in conversation_context:
-                speaker = "User" if msg["role"] == "user" else "Assistant"
-                conversation_lines.append(f"{speaker}: {msg['content']}")
-            conversation_str = "\n".join(conversation_lines)
-            if(self.debug): print(f"[Brain] conversation context length: {len(conversation_str)} chars")
         
-        prompt = ""
-        if conversation_str:
+        prompt = f"QUESTION: {question}"
+
+        if len(conversation_context) > 0:
+            context_str = "\n\nCONVERSATION HISTORY:\n"
+            for msg in conversation_context:
+                context_str += f"user: {msg[0]}\nyou: {msg[1]}\n"
+            prompt = context_str
+            if self.debug: 
+                print(f"[Brain] prompt: {prompt}")
+            prompt += "\n\n"
             prompt += textwrap.dedent(
                 f"""
-                CONVERSATION HISTORY:
-                {conversation_str}
+                The user's latest message is: "{question}"
+                
+                Write your response
                 """
             )
             
+        context_str = context_string
+
         prompt += textwrap.dedent(
             f"""
             KNOWLEDGE CONTEXT:
             {context_str}
             ANSWER:
             """ )
-
-        if conversation_context and len(conversation_context) > 0:
-            prompt += textwrap.dedent(
-                """
-                This appears to be a follow-up question. Use the conversation history to understand the context of the question.
-                Make sure your answer maintains continuity with the previous conversation.
-                """
-            )
-            
-        prompt += textwrap.dedent(
-            f"""
-
-            USER QUESTION: {question}
-            
-            ANSWER:"""
-        )
         
         if(self.debug): print("[Brain] sending prompt to LLM for final answer generation")
         """
