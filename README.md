@@ -4,6 +4,8 @@
 
 <img width="1419" alt="Screenshot 2025-05-30 at 2 56 57 PM" src="https://github.com/user-attachments/assets/2c32bcf9-6ec1-4b4a-a0bf-fec4e394a7e9" />
 <img width="1427" alt="Screenshot 2025-05-28 at 10 38 00 AM" src="https://github.com/user-attachments/assets/fc7772b9-3654-486c-9bc6-d4d144536441" />
+![image](https://github.com/user-attachments/assets/94007997-4cfd-4fad-8248-00ef2d66c5b4)
+
 This repository contains the backend service for Hozie, a full-stack AI chatbot application. The service is built with Python and Flask and is responsible for user authentication, API routing, and orchestrating the core AI logic for conversational responses.
 
 The core of this service is the `Brain` class, which implements a sophisticated cognitive architecture. This allows Hozie to maintain a persistent, shared "global brain" that learns and grows from all user interactions, storing its knowledge in a structured tree within a Supabase database.
