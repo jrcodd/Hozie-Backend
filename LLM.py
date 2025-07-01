@@ -643,28 +643,6 @@ class Brain:
             if(self.debug): print(f"[Brain] error during context retrieval: {e}")
             if(self.debug): print(f"Stack trace:\n{traceback.format_exc()}")
 
-    def _retrieve_recent_context(self, user: str, k: int = 5) -> List[Dict]:
-        """
-        Retrieve recent context from chat history.
-        This method retrieves the last k messages from the chat history to provide context for follow-up questions.
-
-        Args:
-            user_question: The user's question to analyze.
-            k: The number of recent messages to retrieve (default is 5).
-        
-        Returns:
-            A list of dictionaries containing recent context chunks from the chat history.
-        """
-        if(self.debug): print(f"[Brain] retrieving recent context for user: '{user}'")
-        
-        if not self.chat_history:
-            self.chat_history = SupabaseChatHistory()
-        
-        recent_context = self.chat_history.get_recent_messages(k)
-        
-        if(self.debug): print(f"[Brain] found {len(recent_context)} recent messages")
-        
-        return recent_context
     def answer(self, user_question: str, message_history: Dict[str, str], max_search_results: int = 5) -> str:
         """
         Main entry-point: answer a user question using RAG.
@@ -680,7 +658,7 @@ class Brain:
         is_opinion_question = self._is_opinion_question(user_question)
         if is_opinion_question:
             if(self.debug): print("[Brain] detected opinion/preference question, generating personalized response")
-            response = self._generate_opinion(user_question)
+            response = self._generate_opinion(message_history, user_question)
             return response
     
         if(self.debug):
@@ -767,7 +745,7 @@ class Brain:
                 
         return False
         
-    def _generate_opinion(self, question: str) -> str:
+    def _generate_opinion(self, conversation_context, question: str) -> str:
         """
         Generate a personalized response to opinion/preference questions.
         
@@ -780,47 +758,24 @@ class Brain:
         Returns:
             str: The generated response to the user's question.
         """
-        if(self.debug): print(f"[Brain] generating opinion response for: '{question}'")
+        if(self.debug): 
+            print(f"[Brain] generating opinion response for: {question}")
         
-        conversation_context = []
-        is_first_opinion_question = True
-        
-        if is_first_opinion_question:  
-            opinion_count = 0
-            for i in range(len(conversation_context)-1, -1, -1):
-                # Skip the current question which is already marked as opinion
-                if i == len(conversation_context)-1 and conversation_context[i]["role"] == "user":
-                    continue
-                if opinion_count >= 3:
-                    break
-                if conversation_context[i]["role"] != "user":
-                    if "?" in conversation_context[i]["content"] or any(marker in conversation_context[i]["content"].lower() for marker in ["how about you", "what do you", "tell me more", "what about"]):
-                        opinion_count += 1
-            
-            is_first_opinion_question = opinion_count == 0
-            if(self.debug): print(f"[Brain] detected {'new' if is_first_opinion_question else 'ongoing'} opinion conversation with {opinion_count} previous turns")
+        prompt = question
 
-        if not is_first_opinion_question and conversation_context:
+        if len(conversation_context) > 0:
             context_str = "\n\nCONVERSATION HISTORY:\n"
             for msg in conversation_context:
-                role = "User" if msg["role"] == "user" else "You"
-                context_str += f"{role}: {msg['content']}\n"
+                context_str += f"user: {msg[0]}\nyou: {msg[1]}\n"
             prompt = context_str
-        
-        if is_first_opinion_question:
-            prompt = textwrap.dedent(
-                f"""    
-                The user has asked: "{question}"
-
-                Your response:
-                """
-            )
-        else:
+            if self.debug: 
+                print(f"[Brain] prompt: {prompt}")
+            prompt += "\n\n"
             prompt += textwrap.dedent(
                 f"""
                 The user's latest message is: "{question}"
                 
-               Write your response
+                Write your response
                 """
             )
 
@@ -845,17 +800,11 @@ class Brain:
             return response
             
         except Exception as e:
-            if(self.debug): print(f"[Brain] error generating opinion: {e}")
-            
-            if is_first_opinion_question:
-                return "Hey, that's a cool question! I'm still figuring out my thoughts on that. What kind of things do you like?"
-            else:
-                return "That's interesting! I'm still processing that one. What else is on your mind?"
+            if(self.debug): 
+                print(f"[Brain] error generating opinion: {e}")
+            return f"{e} That's interesting! I'm still processing that one. What else is on your mind?"
         
-    
-    
     def _generate_answer(self, question: str, context_chunks: List[Dict], conversation_context: List[Dict] = None) -> str:
-        
         """
         LLM final step: fuse context → natural-language answer.
         
@@ -868,16 +817,14 @@ class Brain:
             str: The generated answer to the user's question.
         """
 
-        
         if not context_chunks:
             
             if(self.debug): print("[Brain] no context chunks available for answer generation")
             
             return "Sorry dude. I don't have enough information to answer your question. I couldn't find relevant content in my memory or from web searches."
-
-        
+          
         if(self.debug): print(f"[Brain] generating answer using {len(context_chunks)} context chunks")
-                
+        
         formatted_context = []
         for i, chunk in enumerate(context_chunks):
             chunk_text = [f"CONTEXT {i+1}:"]

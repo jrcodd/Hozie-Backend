@@ -1,4 +1,3 @@
-from typing import Dict
 from LLM import Brain
 class Session:
     """
@@ -9,8 +8,8 @@ class Session:
 
     I'm thinking like this: Imagine rain falling into puddles. Each drop radiates out and affects the whole puddle. Now instead of water, imagine a bunch of different colors. Each new color leaves a mark on the world (big puddle). This is how I imagine connections. When you meet someone, you change their puddle area while also changing your own and maybe you change one of their friends too that is closeby. Over time, your colors mix together and your persona eventually becomes a product of all the other people you interact with. 
     """
-    def __init__(self):
-        self.brain = Brain(False)
+    def __init__(self, debug=True):
+        self.brain = Brain(debug)
         self.messages = []
 
     def answer(self, query: str) -> str:
@@ -20,14 +19,16 @@ class Session:
         Args:
             query (str): The question to ask the user
         """
-        return self.brain.answer(query, 5)
+        answer =  self.brain.answer(query, self.messages, 5)
+        self.add_message([query, answer])
+        return answer
 
-    def add_message(self, message: Dict[str, str]) -> None:
+    def add_message(self, message: list[str, str]) -> None:
         """
         Add a message to the session.
 
         Args:
-            message (Dict[str, str]): A dictionary containing the sender and the message.
+            message (List[str, str]): A list containing the sender and the message.
         """
         self.messages.append(message)
 
