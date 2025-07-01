@@ -804,7 +804,7 @@ class Brain:
                 print(f"[Brain] error generating opinion: {e}")
             return f"{e} That's interesting! I'm still processing that one. What else is on your mind?"
         
-    def _generate_answer(self, question: str, context_chunks: List[Dict], conversation_context: List[str, str] = None) -> str:
+    def _generate_answer(self, question: str, context_chunks: List[Dict], conversation_context = None) -> str:
         """
         LLM final step: fuse context → natural-language answer.
         
@@ -930,7 +930,7 @@ class Brain:
             if(self.debug): print(f"[Brain] error during answer generation: {e}")
             return "I encountered an error while trying to generate an answer based on the information I found. Please try asking your question again."
 
-    def _generate_answer(self, question: str, context_string: str, conversation_context: List[str, str] = None) -> str:
+    def _generate_answer(self, question: str, context_string: str, conversation_context = None) -> str:
 
         """
         LLM final step: fuse context → natural-language answer.
