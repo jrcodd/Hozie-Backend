@@ -21,6 +21,7 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 app.config['MISTRAL_API_KEY'] = os.getenv('MISTRAL_API_KEY', None)
 
 jwt_manager = JWTManager(app)
+sessions = {}
 
 def get_authenticated_user() -> str:
     """
@@ -111,7 +112,9 @@ def chat() -> Any:
             'reply': 'I got an authentication error. Make sure your email is verified. If it is then try logging in again bro.',
             'error': 'Authentication required'
         }), 200
-    
+    if user_id not in sessions:
+        print(f"Creating new session for user {user_id}")
+        sessions[user_id] = Session(debug=True)
     print(f"User authenticated: {user_id}")
 
     try:
@@ -128,7 +131,7 @@ def chat() -> Any:
         return jsonify({'error': 'Invalid request format'}), 400
 
     try:
-        session = Session()
+        session = sessions[user_id]
     except Exception as e:
         print(f"Failed to get global brain: {e}")
         return jsonify({'reply': "Hozie is not here right now. He's probably out surfing. Check back in a few."}), 503
