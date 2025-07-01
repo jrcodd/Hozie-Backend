@@ -4,7 +4,8 @@
 
 <img width="1419" alt="Screenshot 2025-05-30 at 2 56 57 PM" src="https://github.com/user-attachments/assets/2c32bcf9-6ec1-4b4a-a0bf-fec4e394a7e9" />
 <img width="1427" alt="Screenshot 2025-05-28 at 10 38 00 AM" src="https://github.com/user-attachments/assets/fc7772b9-3654-486c-9bc6-d4d144536441" />
-<img width="1420" alt="convo history screenshot" scr="https://github.com/user-attachments/assets/94007997-4cfd-4fad-8248-00ef2d66c5b4" />
+<img width="1425" alt="Screenshot 2025-06-30 at 10 09 41 PM" src="https://github.com/user-attachments/assets/f6475c2d-86f5-426a-90bc-7beb907a9324" />
+
 
 This repository contains the backend service for Hozie, a full-stack AI chatbot application. The service is built with Python and Flask and is responsible for user authentication, API routing, and orchestrating the core AI logic for conversational responses.
 
