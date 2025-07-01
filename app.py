@@ -5,7 +5,7 @@ from datetime import timedelta
 import os
 from dotenv import load_dotenv
 from flask_jwt_extended import JWTManager
-from LLM import Brain
+from Session import Session
 import jwt
 
 load_dotenv()
@@ -36,6 +36,7 @@ def get_authenticated_user() -> str:
             user = verify_supabase_jwt(token)
             if user:
                 return user.get('sub', None)
+            
         except Exception:
             print("No valid Authorization header found")
     return None
@@ -75,23 +76,6 @@ def verify_supabase_jwt(token) -> Optional[Dict[str, Any]]:
 
 
 global_brain = None
-
-def get_global_brain() -> Brain:
-    """
-    shared brain instance for all users to make hozie get smarter over time from all user queries instead of a per user brain that will only learn from that one user
-
-    Returns:
-        Brain: The global brain instance.
-    """
-    global global_brain
-    if global_brain is None:
-        try:
-            global_brain = Brain()
-        except Exception as e:
-            print(f"Failed to create global brain: {e}")
-            raise e
-    
-    return global_brain
 
 @app.after_request
 def add_cors_headers(response):
@@ -144,14 +128,14 @@ def chat() -> Any:
         return jsonify({'error': 'Invalid request format'}), 400
 
     try:
-        brain_instance = get_global_brain()
+        session = Session()
     except Exception as e:
         print(f"Failed to get global brain: {e}")
         return jsonify({'reply': "Hozie is not here right now. He's probably out surfing. Check back in a few."}), 503
 
     try:
         print(f"Processing message for user {user_id} with shared brain...")
-        reply = brain_instance.answer(question)
+        reply = session.answer(question)
         return jsonify({
             'reply': reply,
             'user': user_id
@@ -176,7 +160,6 @@ def health() -> Any:
     """
     return jsonify({
         'status': 'healthy',
-        'brain_instance_active': global_brain is not None,
     })
 
 

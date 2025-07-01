@@ -14,7 +14,6 @@ from bs4 import BeautifulSoup
 from mistralai import Mistral, UserMessage
 
 from supabase_topic_node import SupabaseTopicNode 
-from supabase_chat_history import SupabaseChatHistory 
 
 def _get_time() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -666,7 +665,7 @@ class Brain:
         if(self.debug): print(f"[Brain] found {len(recent_context)} recent messages")
         
         return recent_context
-    def answer(self, user_question: str, max_search_results: int = 5) -> str:
+    def answer(self, user_question: str, message_history: Dict[str, str], max_search_results: int = 5) -> str:
         """
         Main entry-point: answer a user question using RAG.
         Args:
@@ -683,107 +682,49 @@ class Brain:
             if(self.debug): print("[Brain] detected opinion/preference question, generating personalized response")
             response = self._generate_opinion(user_question)
             return response
-        
-        #TODO: add previous conversation to the context if this is a follow-up question
-        is_followup = self._is_followup_question(user_question)
-        recent_context = []
+    
+        if(self.debug):
+            print("[Brain] checking internal memory...")
 
-        if is_followup:
-            # access supabase_chat_history to get the recent context
-            if(self.debug): print("[Brain] detected follow up question, retrieving recent context")
-            recent_context = self._retrieve_recent_context(user_question)
-        
-        if(self.debug): print("[Brain] checking internal memory...")
         context = self._retrieve_context(user_question, k=5)
         if context:
-            if(self.debug): print(f"[Brain] found {len(context)} relevant contexts in memory")
-            if(self.debug): print("[Brain] internal context sufficient.")
+            if(self.debug): 
+                print(f"[Brain] found {len(context)} relevant contexts in memory")
             
-            #debug print context
-            for i, ctx in enumerate(context):
-                desc = ctx.get('description', '')[:100] + '...' if ctx.get('description') else 'No description'
-                points = ctx.get('bullet_points', [])
-                point_preview = points[0][:50] + '...' if points and isinstance(points[0], str) and len(points[0]) > 50 else points[0] if points else 'No bullet points'
-                if(self.debug): print(f"[Brain] Answer Context {i+1}: {desc}")
-                if(self.debug): print(f"[Brain] Answer Context {i+1} Point: {point_preview}")
+                for i, ctx in enumerate(context):
+                    desc = ctx.get('description', '')[:100] + '...' if ctx.get('description') else 'No description'
+                    points = ctx.get('bullet_points', [])
+                    point_preview = points[0][:50] + '...' if points and isinstance(points[0], str) and len(points[0]) > 50 else points[0] if points else 'No bullet points'
+                    print(f"[Brain] Answer Context {i+1}: {desc}")
+                    print(f"[Brain] Answer Context {i+1} Point: {point_preview}")
 
-            response = self._generate_answer(user_question, context, recent_context)
+            response = self._generate_answer(user_question, context, message_history)
             return response
         else:
-            if context:
-                if(self.debug): print("[Brain] found some context but it's not sufficient, proceeding to web search")
-            else:
-                if(self.debug): print("[Brain] no relevant context found in memory, proceeding to web search")
+            if(self.debug): 
+                if context:
+                    print("[Brain] found some context but it's not sufficient, proceeding to web search")
+                else:
+                    print("[Brain] no relevant context found in memory, proceeding to web search")
             
             search_q = self._rewrite_query(user_question)
-            if(self.debug): print(f"[Brain] search query rewritten to: '{search_q}'")
+            if(self.debug): 
+                print(f"[Brain] search query rewritten to: '{search_q}'")
             
             search_hits = self._search(search_q, max_results=max_search_results)
-            if(self.debug): print(f"[Brain] found {len(search_hits)} search results")
+            if(self.debug): 
+                print(f"[Brain] found {len(search_hits)} search results")
             
-            # Capture the return value from the async function
-
             context = asyncio.run(self.process_search_results_parallel
             (search_hits, user_question))
             context_joined = ""
             for i in context:
                 context_joined += i + "\n"
             context_joined = context_joined.strip()
-            response = self._generate_answer(user_question, context_joined, recent_context)
+            response = self._generate_answer(user_question, context_joined, message_history)
 
             return response
-
-    def _is_followup_question(self, question: str) -> bool:
-        """
-        Determine if the question is a follow-up to a previous conversation.
-        
-        Args:
-            question (str): The user's question to analyze.
-        
-        Returns:
-            bool: True if the question is likely a follow-up, False otherwise.
-        """
-            
-        # Look for indicators of follow-up questions
-        followup_indicators = [
-            # Pronouns that refer to something previously mentioned
-            "they", "them", "those", "these", "this",
-            
-            # Direct references to previous information
-            "as mentioned", "as you said", "as we discussed", "earlier", "previous",
-            "you just said", "you told me", "you mentioned",
-            
-            # Questions that build on previous context
-            "and what about", "what else", "tell me more", "can you elaborate",
-            "why is that", "how does that work", "could you explain", 
-            "what if", "is there more", "go on", "continue", "furthermore",
-            
-            # Short standalone questions that rely on context
-            "what if", "which of those", 
-            
-            # Direct continuations
-            "also", "additionally", "moreover"
-        ]
-        
-        # Very short questions are often follow-ups
-        if len(question.split()) <= 3 and not question.startswith("what is") and not question.startswith("how to"):
-            if(self.debug): print(f"[Brain] detected follow-up question (short question): '{question}'")
-            return True
-            
-        for indicator in followup_indicators:
-            if f" {indicator} " in f" {question} " or question.startswith(indicator + " "):
-                if(self.debug): print(f"[Brain] detected follow-up question with pattern: '{indicator}'")
-                return True
-                
-        if len(question.split()) < 5:
-            pronoun_indicators = ["it", "they", "them", "those", "these", "that", "this"]
-            for pronoun in pronoun_indicators:
-                if f" {pronoun} " in f" {question} ":
-                    if(self.debug): print(f"[Brain] detected follow-up question (short with pronoun): '{question}'")
-                    return True
-        
-        return False
-        
+    
     def _is_opinion_question(self, question: str) -> bool:
         """Determine if the question is asking for opinions or preferences."""
         question = question.lower()
