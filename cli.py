@@ -68,24 +68,22 @@ def _print_help() -> None:
           data {name of node}  Show data for a specific node
           leafinfo {/first/second/third/.../leaf}  Show data for a specific leaf node
           think                Ask the LLM to think about a topic on its own
-          merge [threshold]    Find and merge similar nodes (optional threshold 0.0-1.0, default 0.8)
-          merge --live [threshold]  Actually perform the merge (not just dry run)
           quit / exit          Exit the program
         """.rstrip()
     ))
 
 
-def interactive_mode(brain: Brain) -> None:
+def interactive_mode(session: Session) -> None:
     """
     Run Hozie in interactive CLI mode.
 
     Args:
-        brain (Brain): The Brain instance to interact with.
+        session (Session): The Session instance to interact with.
     """
     print("Hozie CLI — press Enter for commands. Type 'exit' to quit.")
 
     try:
-        session = Session()
+        brain = session.brain
         while True:
             
             try:
@@ -170,7 +168,6 @@ def main() -> None:
     Entry point for the CLI with command-line argument support.
     """
     session = Session()
-    brain = Brain(debug=True)  # Initialize the Brain with debug mode enabled
     parser = argparse.ArgumentParser(description="Hozie Voice Assistant Memory System CLI")
     parser.add_argument("--question", type=str, 
                         help="Direct question to ask without entering interactive mode")
@@ -181,7 +178,7 @@ def main() -> None:
         reply = session.answer(args.question)
         print("\n>>>", reply)
     else:
-        interactive_mode(brain)
+        interactive_mode(session)
 
 
 if __name__ == "__main__":

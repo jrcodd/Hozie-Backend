@@ -208,7 +208,7 @@ class SupabaseTopicNode:
             Optional[SupabaseTopicNode]: The found child node, or None if not found
         """
         for child in self.children:
-            if child.topic == topic_name:
+            if child.topic in topic_name or topic_name in child.topic:
                 return child
         return None
     

@@ -1,8 +1,8 @@
 import os
 from mistralai import Mistral
 
-api_key = os.environ["MISTRAL_API_KEY"]
-model = "ministral-8b-latest"
+api_key = os.environ.get("MISTRAL_API_KEY")
+model = "ministral-8b-2410"
 
 client = Mistral(api_key=api_key)
 
@@ -13,8 +13,25 @@ chat_response = client.chat.complete(
             "role": "user",
             "content": "What is the best French cheese?",
         },
-    ]
+    ],
+    timeout_ms= 2000,
+    retries= 3
+
 )
+chat_params = {
+            "model": model,
+            "temperature": 0.4,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "What is the best subject in school",
+                },
+            ],
+            "timeout_ms": 3000,
+            "retries": 3
+        }
+                
+chat_response = client.chat.complete(**chat_params)
 
 print(chat_response.choices[0].message.content)
 
@@ -80,5 +97,4 @@ INTERESTS: You get hyped about {', '.join( PERSONALITY_TRAITS['topics'][:3])}.
 ENTERTAINMENT: You're always checking out {', '.join( PERSONALITY_TRAITS['shows'][:2])}, especially anything with { PERSONALITY_TRAITS['celebrities'][0]}.
 """
 
-print("\n\n\n\n\n\n"
-+system_prompt + "\n\n\n\n\n\n")
+#print("\n\n\n\n\n\n"+system_prompt + "\n\n\n\n\n\n")

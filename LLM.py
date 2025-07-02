@@ -6,6 +6,7 @@ import textwrap
 import time
 import random
 import asyncio
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Sequence, Tuple, Optional
 
@@ -46,6 +47,8 @@ class Brain:
             print(f"[Brain] using Supabase storage for global memory")
         self.memory = SupabaseTopicNode.get_global_root()
         self.chat_history = None
+        # Thread lock to prevent concurrent memory insertions that could create duplicates
+        self._memory_lock = threading.Lock()
     
     def _init_mistral(self) -> None:
         """
@@ -448,83 +451,140 @@ class Brain:
             
         # No similar path found
         return False, node, current_path
-
+    
+    def _find_similar_child(self, parent_node: SupabaseTopicNode, target_topic: str) -> Optional[SupabaseTopicNode]:
+        """
+        Find a similar child node to avoid creating duplicates.
+        
+        Args:
+            parent_node: The parent node whose children to search
+            target_topic: The topic name we're looking for a similar match to
+            
+        Returns:
+            Optional[SupabaseTopicNode]: The similar child node if found, None otherwise
+        """
+        for child in parent_node.children:
+            # 1. Check for exact match ignoring case
+            if child.topic.lower() == target_topic.lower():
+                if(self.debug): print(f"[Brain] found case-insensitive match: {child.topic} for {target_topic}")
+                return child
+                
+            # 2. Check if one is a prefix/suffix of the other
+            if child.topic.lower().startswith(target_topic.lower()) or target_topic.lower().startswith(child.topic.lower()):
+                if(self.debug): print(f"[Brain] found prefix/suffix match: {child.topic} for {target_topic}")
+                return child
+                
+            # 3. Check for word-level similarity
+            child_words = set(re.findall(r'\w+', child.topic.lower()))
+            target_words = set(re.findall(r'\w+', target_topic.lower()))
+            
+            if child_words and target_words:
+                overlap = child_words.intersection(target_words)
+                similarity = len(overlap) / max(len(child_words), len(target_words))
+                
+                if similarity > 0.8:  
+                    if(self.debug): print(f"[Brain] found similar node: {child.topic} for {target_topic} (similarity: {similarity:.2f})")
+                    return child
+        
+        return None
+        
     def _insert_memory(self, topic_path: Sequence[str], data: Dict, source_url: str, confidence: float = 0.80) -> None:
         """
         Create/merge SupabaseTopicNodes along topic_path and attach data.
+        Uses thread lock to prevent concurrent insertions from creating duplicate paths.
         
         Args:
             topic_path: List of topics representing the path in the memory tree.
             data: Dictionary containing the data to store at the leaf node.
             source_url: URL of the source where the data was retrieved from.
-            confidence: Confidence level of the data (default is 0.80).            
+            confidence: Confidence level of the data (default is 0.80).
         """
-        
-        if not topic_path:
-            if(self.debug): print("[Brain] ERROR: Empty topic path provided, using fallback path")
-            topic_path = ["Uncategorized", "WebContent"]
-        
-        # Ensure topic_path is a list of strings
-        if not isinstance(topic_path, (list, tuple)):
-            if(self.debug): print(f"[Brain] ERROR: topic_path is not iterable: {type(topic_path)}, converting to list")
-            topic_path = [str(topic_path)]
-        elif not all(isinstance(item, str) for item in topic_path):
-            if(self.debug): print("[Brain] ERROR: topic_path contains non-string items, converting")
-            topic_path = [str(item) for item in topic_path]
+        with self._memory_lock:  # Prevent concurrent memory insertions
+            if not topic_path:
+                if(self.debug): print("[Brain] ERROR: Empty topic path provided, using fallback path")
+                topic_path = ["Uncategorized", "WebContent"]
             
-        if not data:
-            if(self.debug): print("[Brain] ERROR: Empty data provided, skipping memory insertion")
-            return
+            # Ensure topic_path is a list of strings
+            if not isinstance(topic_path, (list, tuple)):
+                if(self.debug):
+                    print(f"[Brain] ERROR: topic_path is not iterable: {type(topic_path)}, converting to list")
+                topic_path = [str(topic_path)]
+            elif not all(isinstance(item, str) for item in topic_path):
+                if(self.debug):
+                    print("[Brain] ERROR: topic_path contains non-string items, converting")
+                topic_path = [str(item) for item in topic_path]
             
-        if(self.debug): print(f"[Brain] inserting data into memory at path: {'/'.join(topic_path)}")
-        
-        try:
-            if topic_path[0] == self.memory.topic:
-                found_similar, existing_node, existing_path = self._check_similar_path(self.memory, topic_path[1:])
-            else:
-                found_similar, existing_node, existing_path = self._check_similar_path(self.memory, topic_path)
+            if not data:
+                if(self.debug):
+                    print("[Brain] ERROR: Empty data provided, skipping memory insertion")
+                return
             
-            if found_similar:
-                if(self.debug): print(f"[Brain] found similar existing path: {'/'.join(existing_path)}")
-                current_node = existing_node
-            else:
-                if(self.debug): print(f"[Brain] creating new path: {'/'.join(topic_path)}")
+            if(self.debug):
+                print(f"[Brain] inserting data into memory at path: {'/'.join(topic_path)}")
+            
+            try:
+                # Skip the root if it matches
+                path_to_create = topic_path[1:] if topic_path[0] == self.memory.topic else topic_path
                 
+                if(self.debug): print(f"[Brain] creating path: {'/'.join(path_to_create)}")
+                
+                # Build path step by step, checking for existing nodes at each level
                 current_node = self.memory
-                for i, topic in enumerate(topic_path):
-                    child = current_node.find_child(topic)
-                    if not child:
-                        if i == len(topic_path) - 1:
-                            child = current_node.add_child(topic, data)
-                            if(self.debug): print(f"[Brain] created leaf node: {child.topic}")
+                
+                for i, topic in enumerate(path_to_create):
+                    # Refresh children cache to get latest state from database
+                    current_node._children_cache = None
+                    
+                    # Check if child already exists (exact match first)
+                    existing_child = current_node.find_child(topic)
+                    
+                    if existing_child:
+                        if(self.debug): print(f"[Brain] found existing node: {existing_child.topic}")
+                        current_node = existing_child
+                    else:
+                        # Check for similar existing children to avoid duplicates
+                        similar_child = self._find_similar_child(current_node, topic)
+                        
+                        if similar_child:
+                            if(self.debug): print(f"[Brain] found similar existing node: {similar_child.topic} (for {topic})")
+                            current_node = similar_child
                         else:
-                            child = current_node.add_child(topic)
-                            if(self.debug): print(f"[Brain] created intermediate node: {child.topic}")
-                    current_node = child
-            
-            node = current_node
-            if(self.debug): print(f"[Brain] node created/found: {node.topic}")
-                        
-            # Merge dictionaries newer values overwrite older ones
-            if isinstance(node.data, dict) and node.data:
-                if(self.debug): print(f"[Brain] merging with existing data ({len(node.data)} keys)")
-                node.data.update(data)
-            else:
-                if(self.debug): print("[Brain] setting new data")
-                node.data = data
-
-            meta_entry = {
-                "url": source_url,
-                "timestamp":  _get_time(),
-                "confidence": confidence,
-            }
-            node.metadata.setdefault("sources", []).append(meta_entry)
-            node.metadata["last_updated"] =  _get_time()
-            if(self.debug): print(f"[Brain] successfully stored data under: {'/'.join(topic_path)}")
-                        
-        except Exception as e:
-            if(self.debug): print(f"[Brain] ERROR during memory insertion: {e}")
-
+                            # Only add data to the leaf node (last topic in path)
+                            if i == len(path_to_create) - 1:
+                                current_node = current_node.add_child(topic, data)
+                                if(self.debug): print(f"[Brain] created leaf node: {current_node.topic}")
+                            else:
+                                current_node = current_node.add_child(topic)
+                                if(self.debug): print(f"[Brain] created intermediate node: {current_node.topic}")
+                
+                target_node = current_node
+                if(self.debug): print(f"[Brain] target node: {target_node.topic}")
+                
+                # Merge data into the target node
+                if isinstance(target_node.data, dict) and target_node.data:
+                    if(self.debug): print(f"[Brain] merging with existing data ({len(target_node.data)} keys)")
+                    target_node.data.update(data)
+                else:
+                    if(self.debug): print("[Brain] setting new data")
+                    target_node.data = data
+                
+                # Add metadata
+                meta_entry = {
+                    "url": source_url,
+                    "timestamp": _get_time(),
+                    "confidence": confidence,
+                }
+                target_node.metadata.setdefault("sources", []).append(meta_entry)
+                target_node.metadata["last_updated"] = _get_time()
+                
+                # Save the updated node
+                target_node.save()
+                
+                if(self.debug): 
+                    print(f"[Brain] successfully stored data under: {target_node.topic}")
+                    
+            except Exception as e:
+                if(self.debug): print(f"[Brain] ERROR during memory insertion: {e}")
     def _generate_topic_path(self, query: str, title: str, data: Dict) -> List[str]:
         """
         Generate a structured topic path based on content analysis.
@@ -550,7 +610,7 @@ class Brain:
         prompt += textwrap.dedent(
         """
         Create a logical knowledge hierarchy that for the given query and content:
-            1. Starts with one of these broad domains only: Science, Humanities, Technology, Arts, Social Sciences
+            1. Starts with one of these broad domains: Science, Humanities, Technology, Arts, Social Sciences, Food, Health, Business, Education, Politics, etc.
             2. Follows with a subdomain (e.g., Physics, Ancient History, Computer Science, Visual Arts, Sociology)
             3. Continues with a topic area (e.g., Quantum Mechanics, Roman Empire, Machine Learning, Painting Techniques, Social Behavior)
             4. Ends with the specific concept (e.g., Wave Function, Julius Caesar, Neural Networks, Impressionism, Group Dynamics)
@@ -564,7 +624,7 @@ class Brain:
             "type": "array",
             "items": {"type": "string"},
         }
-        output = self.sync_llm_call(prompt, temp=0.4, output_type="json_object", json_schema=json_schema)
+        output = self.sync_llm_call(prompt, temp=0.15, output_type="json_object", json_schema=json_schema)
         if(self.debug): print(f"[Brain] topic path generation output: {output}")
         try:
             path = json.loads(output.strip())
@@ -599,24 +659,23 @@ class Brain:
             A list of dictionaries containing relevant context chunks from the memory tree.
         """
         if(self.debug): print(f"[Brain] retrieving context for query: '{query}'")
-        try:
-            node_count = len([self.memory] + self.memory.get_all_descendants())
-            
-            if node_count < k:
-                if(self.debug): print("[Brain] memory tree is empty or nearly empty using web search")
-                return []
-            
-            contexts = self.get_relevant_context(query, max_results=k*3)
+        try: 
+            contexts = self.get_relevant_context(query, max_results=k*2)
 
-            if(self.debug): print(f"[Brain] found {len(contexts)} context chunks")
+            if(self.debug):
+                print(f"[Brain] found {len(contexts)} context chunks")
+                for i in contexts:
+                    print(f"[Brain] Context Chunk Title: {i.topic}")
+                    desc = i.data.get('description', ''),
+                    print(f"[Brain] Context Chunk: {desc}")
 
             if contexts:
                 unique_contexts = []
                 description_set = set()   
 
                 for ctx in contexts:
-                    if ctx.get('description') and ctx.get('bullet_points'):
-                        desc = ctx.get('description', '')
+                    if ctx.data.get('description') and ctx.data.get('bullet_points'):
+                        desc = ctx.data.get('description', '')
                         if not desc or len(desc) <= 30:
                             unique_contexts.append(ctx)
                             continue
@@ -643,7 +702,7 @@ class Brain:
             if(self.debug): print(f"[Brain] error during context retrieval: {e}")
             if(self.debug): print(f"Stack trace:\n{traceback.format_exc()}")
 
-    def answer(self, user_question: str, message_history: Dict[str, str], max_search_results: int = 5) -> str:
+    def answer(self, user_question: str, message_history: Dict[str, str], max_search_results: int = 4) -> str:
         """
         Main entry-point: answer a user question using RAG.
         Args:
@@ -668,10 +727,11 @@ class Brain:
         if context:
             if(self.debug): 
                 print(f"[Brain] found {len(context)} relevant contexts in memory")
-            
-                for i, ctx in enumerate(context):
-                    desc = ctx.get('description', '')[:100] + '...' if ctx.get('description') else 'No description'
-                    points = ctx.get('bullet_points', [])
+                i = 0
+                for ctx in context:
+                    i+=1
+                    desc = ctx.data.get('description', '')[:100] + '...' if ctx.data.get('description') else 'No description'
+                    points = ctx.data.get('bullet_points', [])
                     point_preview = points[0][:50] + '...' if points and isinstance(points[0], str) and len(points[0]) > 50 else points[0] if points else 'No bullet points'
                     print(f"[Brain] Answer Context {i+1}: {desc}")
                     print(f"[Brain] Answer Context {i+1} Point: {point_preview}")
@@ -699,7 +759,7 @@ class Brain:
             for i in context:
                 context_joined += i + "\n"
             context_joined = context_joined.strip()
-            response = self._generate_answer(user_question, context_joined, message_history)
+            response = self._generate_answer_from_string(user_question, context_joined, message_history)
 
             return response
     
@@ -804,7 +864,7 @@ class Brain:
                 print(f"[Brain] error generating opinion: {e}")
             return f"{e} That's interesting! I'm still processing that one. What else is on your mind?"
         
-    def _generate_answer(self, question: str, context_chunks: List[Dict], conversation_context = None) -> str:
+    def _generate_answer(self, question: str, context_chunks: List['SupabaseTopicNode'], conversation_context = None) -> str:
         """
         LLM final step: fuse context → natural-language answer.
         
@@ -826,22 +886,23 @@ class Brain:
         if(self.debug): print(f"[Brain] generating answer using {len(context_chunks)} context chunks")
         
         formatted_context = []
-        for i, chunk in enumerate(context_chunks):
+        i = 0
+        for chunk in context_chunks:
+            i += 1
             chunk_text = [f"CONTEXT {i+1}:"]
-            
-            if 'description' in chunk and chunk['description']:
-                chunk_text.append(f"Description: {chunk['description']}")
-            
-            if 'bullet_points' in chunk and isinstance(chunk.get('bullet_points'), list):
+            if 'description' in chunk.data and chunk.data['description']:
+                chunk_text.append(f"Description: {chunk.data['description']}")
+
+            if 'bullet_points' in chunk.data and isinstance(chunk.data.get('bullet_points'), list):
                 points = []
-                for point in chunk['bullet_points']:
+                for point in chunk.data['bullet_points']:
                     if isinstance(point, str):
                         points.append(f"  • {point}")
                 if points:
                     chunk_text.append("Key points:")
                     chunk_text.extend(points)
             
-            for k, v in chunk.items():
+            for k, v in chunk.data.items():
                 if k not in ('description', 'bullet_points') and isinstance(v, (str, int, float)):
                     chunk_text.append(f"{k.capitalize()}: {v}")
             
@@ -930,8 +991,7 @@ class Brain:
             if(self.debug): print(f"[Brain] error during answer generation: {e}")
             return "I encountered an error while trying to generate an answer based on the information I found. Please try asking your question again."
 
-    def _generate_answer(self, question: str, context_string: str, conversation_context = None) -> str:
-
+    def _generate_answer_from_string(self, question: str, context_string: str, conversation_context = None) -> str:
         """
         LLM final step: fuse context → natural-language answer.
         
@@ -952,7 +1012,7 @@ class Brain:
             return "Sorry dude. I don't have enough information to answer your question. I couldn't find relevant content in my memory or from web searches."
 
         
-        if(self.debug): print(f"[Brain] generating answer using {context_string} context string")
+        if(self.debug): print(f"[Brain] generating answer using context string of length {len(str(context_string))}")
         
         
         prompt = f"QUESTION: {question}"
@@ -1069,44 +1129,45 @@ class Brain:
             if(self.debug): print(f"[Brain] LLM call failed: {e}")
             return "Error generating response"
 
-    def sync_llm_call(self, prompt: str, temp: float, output_type: Optional[str] = None, json_schema: Optional[Dict[str, Any]] = None) -> str:
+    def sync_llm_call(self, prompt: str, temp: float, output_type: Optional[str] = None, json_schema: Optional[Dict[str, Any]] = None, model = "open-mistral-nemo", timeout: int = 8000, max_retries: int = 4) -> str:
         """
-        Synchronous LLM call using Mistral API directly.
+        Synchronous LLM call using Mistral API directly with timeout and retry.
         Args:
             prompt (str): The prompt to send to the LLM.
             temp (float): Temperature for the LLM response.
             output_type (str, optional): Output format type. Use "json_object" for JSON responses.
             json_schema (Dict[str, Any], optional): JSON schema to validate the response structure.
+            model (str): Model to use for the LLM call.
+            timeout (float): Timeout in seconds (default 5.0).
+            max_retries (int): Maximum number of retries (default 1).
         Returns:
             str: The response from the LLM.
-        """
-        try:
-            model = "open-mistral-nemo"
-            chat_params = {
-                "model": model,
-                "temperature": temp,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    },
-                ],
-            }
-            
-            if output_type:
-                chat_params["response_format"] = {"type": output_type}
+        """     
+        model = model
+        chat_params = {
+            "model": model,
+            "temperature": temp,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            "timeout_ms": timeout,
+            "retries": max_retries
+        }
+                
+        if output_type:
+            chat_params["response_format"] = {"type": output_type}
 
-            if json_schema and output_type == "json_object":
-                chat_params["response_format"]["json_schema"] = json_schema
-            
-            chat_response = self.client.chat.complete(**chat_params)
-            return chat_response.choices[0].message.content
-            
-        except Exception as e:
-            if(self.debug): print(f"[Brain] Sync LLM call failed: {e}")
-            return "Error generating response"
+        if json_schema and output_type == "json_object":
+            chat_params["response_format"]["json_schema"] = json_schema
+        
+        chat_response = self.client.chat.complete(**chat_params)
+                                
+        return chat_response.choices[0].message.content
 
-    def get_relevant_context(self, query: str, max_results: int = 5, relevance_threshold: float = 0.2) -> List[Dict[str, Any]]:
+    def get_relevant_context(self, query: str, max_results: int = 5, relevance_threshold: float = 0.2) -> List['SupabaseTopicNode']:
         """
         Efficient context search using DFS with relevance-based pruning.
         Only explores branches that show relevance to avoid traversing the entire tree and make time complexity closer to O(lgn). LLM generation should be close to constant time with the short prompt. In the future will make a fine tuned model to make this more true.
@@ -1132,39 +1193,36 @@ class Brain:
             Returns:
                 float: Relevance score between 0.0 and 1.0.
             """
-            if not isinstance(node.data, dict) or not node.data:
-                return 0.0
-                
-            data_text = node.data.get("description", "")
-            title = node.topic if hasattr(node, 'topic') else ''
-            all_text = f"{title} + {data_text}"
-            all_text = all_text.lower()
-            
             keyword_matches = 0
             total_keywords = len(keywords)
-            
+
             for kw in keywords:
-                if isinstance(kw, str) and kw.lower() in all_text:
-                    keyword_matches += 1
-                    # Boost score for title matches (more important)
-                    if kw.lower() in title.lower():
-                        keyword_matches += 0.5
-            
-            if total_keywords == 0:
-                return 0.0
+                title = node.topic
+                if kw.lower() in title.lower() or title.lower() in kw.lower():
+                    return 1.0
                 
+                data_text = node.data.get("description", "")
+                all_text = f"{title} + {data_text}"
+                all_text = all_text.lower()
+                if kw.lower() in all_text:
+                    keyword_matches += 1
+                    if self.debug: 
+                        print(f"[Brain] Keyword match found: '{kw}' in node '{node.topic}'")
+
+            if total_keywords == 0:
+                return 0.0      
             base_score = keyword_matches / total_keywords
-            
+                    
             content_boost = min(len(data_text) / 500.0, 1.0)  # Normalize content length
-            
+                    
             final_score = base_score + (content_boost * 0.2)
             final_score = min(final_score, 1.0)  # Cap at 1.0
-            
+                
             return final_score
 
-        def dfs_search(node: 'SupabaseTopicNode', visited: set, scored_nodes: list, high_scored_nodes: list) -> None:
+        def bfs_search(node: 'SupabaseTopicNode', visited: set, scored_nodes: list, high_scored_nodes: list) -> None:
             """
-            DFS traversal that only explores relevant branches.
+            BFS traversal that only explores relevant branches.
 
             Args:
                 node: The current SupabaseTopicNode to explore.
@@ -1174,28 +1232,37 @@ class Brain:
             Returns:
                 None: This function modifies scored_nodes in place.
             """
-            if len(scored_nodes) > max_results:
-                if(self.debug): print(f"[Brain] Reached max results limit of {max_results}, stopping DFS")
+            if len(high_scored_nodes) > max_results:
+                if(self.debug): 
+                    print(f"[Brain] Reached max results limit of {max_results}, stopping DFS\n")
+                    for node in high_scored_nodes:
+                        print(f"[Brain] High scored node: '{node.topic}' with data: {node.data}")
                 return
             if node.node_id in visited:
                 return
             visited.add(node.node_id)
             
-            if isinstance(node.data, dict) and node.data:
-                score = calculate_relevance_score(node)
-                if score > relevance_threshold:
-                    scored_nodes.append((score, node.data, node.topic))
-                    if(self.debug): print(f"[Brain] Found relevant: '{node.topic}' (score: {score:.3f})")
-                    if score > relevance_threshold:
-                        high_scored_nodes.append(node)
-            
-            # Continue DFS on all children since this branch is relevant
-            for child in node.children:
-                if child.node_id not in visited:
-                    dfs_search(child, visited, scored_nodes, high_scored_nodes)
+            score = calculate_relevance_score(node)
+
+            if self.debug:
+                print(f"[Brain] Scoring node '{node.topic}' (ID: {node.node_id}) with score: {score:.3f}")
+            if score > relevance_threshold:
+                if(node.data is not None and len(node.data.keys()) > 0):
+                    if(self.debug): 
+                        print(f"[Brain] Found relevant: '{node.topic}' (score: {score:.3f})") 
+                    high_scored_nodes.append(node)
+
+                scored_nodes.append((score, node))
+                for child in node.children:
+                    if child.node_id not in visited:
+                        bfs_search(child, visited, scored_nodes, high_scored_nodes)
         if(self.debug):
             print("getting keywords from llm")
-        keywords = self._get_likely_keywords_from_llm(query)
+            try:
+                keywords = self._get_likely_keywords_from_llm(query)
+            except TimeoutError:
+                if(self.debug): print(f"[Brain] LLM keyword generation timed out")
+                keywords = set()
 
         if not keywords:
             if(self.debug): print(f"[Brain] No keywords generated from LLM, falling back to basic keyword extraction for query: '{query}'")
@@ -1203,17 +1270,16 @@ class Brain:
         if(self.debug): 
             print(f"[Brain] Searching for keywords: {keywords}")
 
-
         visited = set()
         scored_nodes = []
         high_scored_nodes = []
         if(self.debug): print(f"[Brain] Starting DFS search from root: '{self.memory.topic}'")
-        dfs_search(self.memory, visited, scored_nodes, high_scored_nodes)
+        bfs_search(self.memory, visited, scored_nodes, high_scored_nodes)
 
         scored_nodes.sort(key=lambda x: x[0], reverse=True)
         
         # Return just the data from top results
-        results = [item[1] for item in scored_nodes[:max_results]]
+        results = [node for _, node in scored_nodes[:max_results]]
         
         if(self.debug): print(f"[Brain] DFS explored {len(visited)} nodes, found {len(scored_nodes)} relevant, returning top {len(results)}")
         return results
@@ -1229,7 +1295,7 @@ class Brain:
             set: Set of keywords generated by the LLM, or an empty set if generation fails
         """
         prompt = textwrap.dedent(f"""
-            Return ONLY a JSON Array of 30 possible categories that this query could fit into. Make sure to include 'Politics' for any query that references a place. Include 'Current Events' for any question that is asking about something happening now or recently. Make sure to include country names or any other very broad topics that could be related to the query too.
+            Return ONLY a JSON Array of at least 20 possible categories that this query could fit into. Include any key terms from the query as well. Include 'Current Events' for any question that is asking about something happening now or recently. Make sure to include country names or any other very broad topics that could be related to the query too. Include broad categories that are relevent to the query like Science, Business, Arts, Geography, Oceanography, Technology, Humanities, Arts ect. 
             Query: {query}
             """
         )
@@ -1238,7 +1304,7 @@ class Brain:
             "items": {"type": "string"}
         }
 
-        output = self.sync_llm_call(prompt, temp=0.2, output_type='json_object', json_schema=json_schema)
+        output = self.sync_llm_call(prompt, temp=0.4, output_type='json_object', json_schema=json_schema)
         if(self.debug): print(f"[Brain] raw keywords output: {output}")
         
         try:
@@ -1321,10 +1387,10 @@ class Brain:
 
             if(self.debug): print(f"[Brain] ▸ exploring (depth {d}) - {question}")
             try:
-                self.answer(question, max_search_results=max_search_results) 
+                self.answer(question, message_history = [], max_search_results=max_search_results) 
                 explored.append(question)
             except Exception as e:
-                if(self.debug): print(f"[Brain] ⚠️ exploration error: {e}")
+                if(self.debug): print(f"[Brain] exploration error: {e}")
 
             if d >= max_depth or len(explored) >= max_total_topics:
                 continue
@@ -1422,19 +1488,101 @@ class Brain:
             # Parse the JSON response
             structured_results = json.loads(response)
             
-            # Store each summary
-            async def store_single_result(summary: Dict) -> bool:
+            # Generate topic paths for all results first
+            async def generate_topic_paths(summaries: List[Dict]) -> List[Tuple[List[str], Dict]]:
+                """Generate topic paths for all summaries"""
+                paths_and_summaries = []
+                import concurrent.futures
+                
+                for summary in summaries:
+                    try:
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            path = await asyncio.get_running_loop().run_in_executor(
+                                executor, self._generate_topic_path, user_question, summary.get("main_idea", "Unknown"), summary
+                            )
+                        paths_and_summaries.append((path, summary))
+                        if(self.debug): print(f"[Brain] generated path: {'/'.join(path)} for summary: {summary.get('main_idea', 'Unknown')}")
+                    except Exception as e:
+                        if(self.debug): print(f"[Brain] failed to generate path for summary: {str(e)}")
+                        continue
+                
+                return paths_and_summaries
+            
+            # Group summaries by final node and merge if necessary
+            def group_and_merge_by_final_node(paths_and_summaries: List[Tuple[List[str], Dict]]) -> List[Tuple[List[str], Dict]]:
+                """Group summaries by final node and merge data for same endpoints"""
+                # Group by final node
+                final_node_groups = {}
+                
+                for path, summary in paths_and_summaries:
+                    if not path:  # Skip empty paths
+                        continue
+                    
+                    final_node = path[-1] if path else "Unknown"
+                    
+                    if final_node not in final_node_groups:
+                        final_node_groups[final_node] = []
+                    
+                    final_node_groups[final_node].append((path, summary))
+                
+                # Merge data for groups with multiple entries
+                merged_results = []
+                
+                for final_node, group in final_node_groups.items():
+                    if len(group) == 1:
+                        # Single entry, no merging needed
+                        merged_results.append(group[0])
+                        if(self.debug): print(f"[Brain] single entry for final node: {final_node}")
+                    else:
+                        # Multiple entries ending with same node - merge them
+                        if(self.debug): print(f"[Brain] merging {len(group)} entries for final node: {final_node}")
+                        
+                        # Use the first path as the base
+                        merged_path, base_summary = group[0]
+                        
+                        # Merge bullet points from all summaries
+                        merged_bullet_points = list(base_summary.get('bullet_points', []))
+                        merged_descriptions = [base_summary.get('description', '')]
+                        merged_sources = [base_summary.get('source', '')]
+                        
+                        for _, other_summary in group[1:]:
+                            # Add unique bullet points
+                            other_points = other_summary.get('bullet_points', [])
+                            for point in other_points:
+                                if point not in merged_bullet_points:
+                                    merged_bullet_points.append(point)
+                            
+                            # Collect additional descriptions and sources
+                            other_desc = other_summary.get('description', '')
+                            if other_desc and other_desc not in merged_descriptions:
+                                merged_descriptions.append(other_desc)
+                            
+                            other_source = other_summary.get('source', '')
+                            if other_source and other_source not in merged_sources:
+                                merged_sources.append(other_source)
+                        
+                        # Create merged summary
+                        merged_summary = {
+                            'main_idea': base_summary.get('main_idea', ''),
+                            'description': ' | '.join(filter(None, merged_descriptions)),
+                            'bullet_points': merged_bullet_points,
+                            'source': ' | '.join(filter(None, merged_sources))
+                        }
+                        
+                        merged_results.append((merged_path, merged_summary))
+                        if(self.debug): print(f"[Brain] merged {len(group)} summaries into single entry with {len(merged_bullet_points)} bullet points")
+                
+                return merged_results
+            
+            # Store each merged result
+            async def store_single_result(path_and_summary: Tuple[List[str], Dict]) -> bool:
                 """Store a single processed result"""
                 try:
-                    import concurrent.futures
-                    # Generate topic path using a thread pool executor
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        path = await asyncio.get_running_loop().run_in_executor(
-                            executor, self._generate_topic_path, user_question, summary.get("main_idea", "Unknown"), summary
-                        )
+                    path, summary = path_and_summary
                     
                     if(self.debug): print(f"[Brain] storing under path: {'/'.join(path)}")
                     # Store the memory using a thread pool executor
+                    import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         await asyncio.get_running_loop().run_in_executor(
                             executor, self._insert_memory, path, summary, summary.get("source", "")
@@ -1445,14 +1593,23 @@ class Brain:
                     if(self.debug): print(f"[Brain] failed to store result: {str(e)}")
                     return False
             
-            if(self.debug): print(f"[Brain] storing {len(structured_results)} summary results")
+            if(self.debug): print(f"[Brain] processing {len(structured_results)} summary results")
 
             if structured_results:
-                store_tasks = [store_single_result(item) for item in structured_results]
+                # Generate topic paths for all results
+                paths_and_summaries = await generate_topic_paths(structured_results)
+                
+                # Group and merge summaries with same final nodes
+                merged_results = group_and_merge_by_final_node(paths_and_summaries)
+                
+                if(self.debug): print(f"[Brain] after merging: {len(merged_results)} unique final nodes (was {len(structured_results)} original results)")
+                
+                # Store the merged results
+                store_tasks = [store_single_result(item) for item in merged_results]
                 store_results = await asyncio.gather(*store_tasks, return_exceptions=True)
                 
                 successful_stores = sum(1 for result in store_results if result is True)
-                if(self.debug): print(f"[Brain] stored information from {successful_stores}/{len(structured_results)} search results")
+                if(self.debug): print(f"[Brain] stored information from {successful_stores}/{len(merged_results)} merged results")
             return context
             
         except Exception as e:
