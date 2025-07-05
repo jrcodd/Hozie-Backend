@@ -1,23 +1,37 @@
 import os
 from mistralai import Mistral
+from datetime import datetime
 
-api_key = os.environ["MISTRAL_API_KEY"]
-model = "ministral-8b-latest"
+api_key = os.environ.get("MISTRAL_API_KEY")
+model = "ministral-3b-2410"
 
 client = Mistral(api_key=api_key)
+start_time = datetime.now()
+query = "what color is the sun"
+prompt = f"Return ONLY a JSON Array of at least 20 possible categories that this query could fit into. Do not add any quotations or anything. Start with [ and end with ]. Include any key terms from the query as well. Include 'Current Events' for any question that is asking about something happening now or recently. Make sure to include country names or any other very broad topics that could be related to the query too. Include broad categories that are relevent to the query like Science, Business, Arts, Geography, Oceanography, Technology, Humanities, Arts ect.Query: {query}"
 
-chat_response = client.chat.complete(
-    model = model,
-    messages = [
-        {
-            "role": "user",
-            "content": "What is the best French cheese?",
-        },
-    ]
-)
+json_schema={
+            "type": "array",
+            "items": {"type": "string"}
+        }
+chat_params = {
+            "model": model,
+            "temperature": 0.4,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            "timeout_ms": 6000,
+            "retries": 3
+        }
+                
+chat_response = client.chat.complete(**chat_params)
 
 print(chat_response.choices[0].message.content)
-
+total_time = datetime.now() - start_time
+print(f"Total time taken: {total_time.total_seconds()} seconds")
 
 
 # Default memory file path in the same directory as this script
@@ -80,5 +94,4 @@ INTERESTS: You get hyped about {', '.join( PERSONALITY_TRAITS['topics'][:3])}.
 ENTERTAINMENT: You're always checking out {', '.join( PERSONALITY_TRAITS['shows'][:2])}, especially anything with { PERSONALITY_TRAITS['celebrities'][0]}.
 """
 
-print("\n\n\n\n\n\n"
-+system_prompt + "\n\n\n\n\n\n")
+#print("\n\n\n\n\n\n"+system_prompt + "\n\n\n\n\n\n")

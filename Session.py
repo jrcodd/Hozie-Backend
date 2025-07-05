@@ -12,14 +12,14 @@ class Session:
         self.brain = Brain(debug)
         self.messages = []
 
-    def answer(self, query: str) -> str:
+    def answer(self, query: str, stream: bool = False) -> str:
         """
         Ask the llm a question and add it to the history
         
         Args:
             query (str): The question to ask the user
         """
-        answer =  self.brain.answer(query, self.messages, 5)
+        answer =  self.brain.answer(query, self.get_messages(5), 2, stream=stream)
         self.add_message([query, answer])
         return answer
 
@@ -32,14 +32,19 @@ class Session:
         """
         self.messages.append(message)
 
-    def get_messages(self) -> list:
+    def get_messages(self, num_messages: int) -> list:
         """
         Get all messages in the session.
+        
+        Args:
+            num_messages (int): The number of messages to retrieve.
 
         Returns:
             list: A list of messages in the session.
         """
-        return self.messages
+        if num_messages > len(self.messages):
+            return self.messages
+        return self.messages[-num_messages:]
     
     def clear(self) -> None:
         """
