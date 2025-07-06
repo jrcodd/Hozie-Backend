@@ -33,7 +33,6 @@ This backend is designed to support a scalable and intelligent conversational AI
 *   **AI & LLMs**: `mistralai` SDK (leveraging Mistral Agents for specific tasks)[3]
 *   **Database**: Supabase (PostgreSQL)
     *   `memory_nodes` table for the knowledge tree (`SupabaseTopicNode`)[2].
-    *   `chat_history` table for persisting conversations (`SupabaseChatHistory`)[4].
 *   **Authentication**: Flask-JWT-Extended, PyJWT (for Supabase token verification)[1]
 *   **Web Interaction**: Brave Search API, Requests, BeautifulSoup4[3]
 *   **Asynchronous Operations**: `asyncio` for parallel web processing[3]
@@ -96,18 +95,6 @@ CREATE TABLE public.memory_nodes (
 );
 ```
 
-**`chat_history` Table (for conversation logs):**
-```sql
-CREATE TABLE public.chat_history (
-  id UUID PRIMARY KEY,
-  user_id UUID NOT NULL,
-  message_type TEXT NOT NULL,
-  content TEXT,
-  "timestamp" TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-  metadata JSONB
-);
-```
-
 ### 4. Environment Configuration
 
 This project requires API keys and database credentials. Create a `.env` file in the root directory by copying the example file:
@@ -159,7 +146,6 @@ flask run --host=0.0.0.0
 Based on notes in the codebase, potential areas for future development include:
 *   **Enhanced Search Queries**: Implement logic to generate a list of search queries (e.g., with `doctype:pdf`) to improve coverage for research-based questions[3].
 *   **Refined Relevance Threshold**: Test and tune the `0.07` relevance threshold in the `_is_context_relevant` function to optimize the trade-off between memory recall and web search frequency[3].
-*   **Full Follow-up Context**: Fully implement the logic to pass previous conversation history to the final answer generation prompt for follow-up questions[3].
 
 ## License
 
