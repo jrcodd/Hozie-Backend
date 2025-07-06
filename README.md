@@ -1,6 +1,7 @@
 
 ## Hozie - https://hozie.netlify.app
 ## Hozie Voice - https://github.com/jrcodd/Hozie-Backend/tree/hozie.v2
+## Voice Demo - https://youtu.be/0ZEVPOOOups
 <img width="590" alt="Screenshot 2025-05-30 at 2 54 24 PM" src="https://github.com/user-attachments/assets/7dba05b1-081b-4dec-81be-435767230217" />
 
 <img width="1419" alt="Screenshot 2025-05-30 at 2 56 57 PM" src="https://github.com/user-attachments/assets/2c32bcf9-6ec1-4b4a-a0bf-fec4e394a7e9" />
