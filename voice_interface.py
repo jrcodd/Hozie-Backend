@@ -6,9 +6,12 @@ import os
 import json
 import queue
 import vosk
-from typing import Optional, Tuple
+import threading
+import time
+from typing import Optional, Tuple, Any
 from dotenv import load_dotenv
-from Session import Session  
+from Session import Session
+from concurrent.futures import ThreadPoolExecutor  
 
 load_dotenv()
 
@@ -40,6 +43,17 @@ class HozieVoiceSynthesizer:
         self.sample_rate = 16000  # Vosk typically works best with 16kHz
         self.block_size = 8000
         self.audio_queue = queue.Queue()
+        
+        # Audio chunk queue for parallel processing
+        self.audio_chunk_queue = queue.Queue()
+        self.is_playing = False
+        
+        # Connection session for reuse
+        self.requests_session = requests.Session()
+        self.requests_session.headers.update({
+            "X-Api-Key": self.api_key,
+            "Content-Type": "application/json"
+        })
         
         print(f"Initializing AsyncFlow TTS voice synthesizer...")
         print(f"API Endpoint: {self.endpoint}")
@@ -234,19 +248,257 @@ class HozieVoiceSynthesizer:
         """
         Stop any currently playing audio.
         """
-        
         sd.stop()
     
-    def audio_callback(self, indata, status):
+    def _split_text_into_chunks(self, text: str, max_chunk_size: int = 200) -> list:
+        """
+        Split text into smaller chunks for faster processing.
+        
+        Args:
+            text (str): Text to split
+            max_chunk_size (int): Maximum characters per chunk
+            
+        Returns:
+            list: List of text chunks
+        """
+        # First, split by sentences
+        sentences = []
+        current_sentence = ""
+        
+        for char in text:
+            current_sentence += char
+            if char in '.!?':
+                sentences.append(current_sentence.strip())
+                current_sentence = ""
+        
+        # Add any remaining text
+        if current_sentence.strip():
+            sentences.append(current_sentence.strip())
+        
+        # Group sentences into chunks
+        chunks = []
+        current_chunk = ""
+        
+        for sentence in sentences:
+            # If adding this sentence would exceed max_chunk_size, start a new chunk
+            if len(current_chunk) + len(sentence) > max_chunk_size and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk += " " + sentence if current_chunk else sentence
+        
+        # Add the last chunk
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+    
+    def _generate_audio_chunk(self, chunk: str, chunk_index: int, voice_id: Optional[str] = None, retry_count: int = 0) -> Optional[Tuple[np.ndarray, int, int]]:
+        """
+        Generate audio for a single chunk (used in parallel processing).
+        
+        Args:
+            chunk (str): Text chunk to convert
+            chunk_index (int): Index of the chunk for ordering
+            voice_id (str): Optional voice ID to use
+            retry_count (int): Number of retry attempts
+            
+        Returns:
+            Optional[Tuple[np.ndarray, int, int]]: (audio_array, sample_rate, chunk_index) or None if failed
+        """
+        
+        voice_id = voice_id or self.voice_id
+        
+        try:
+            data = {
+                "model_id": "asyncflow_v2.0",
+                "transcript": chunk,
+                "voice": {
+                    "mode": "id",
+                    "id": voice_id
+                },
+                "output_format": self.output_format
+            }
+            
+            # Add small delay to avoid overwhelming the API
+            if chunk_index > 0:
+                time.sleep(0.1 * chunk_index)
+            
+            response = self.requests_session.post(
+                self.endpoint,
+                json=data,
+                stream=True,
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                print(f"API Error for chunk {chunk_index}: {response.status_code}")
+                # Retry once for connection errors
+                if retry_count == 0 and response.status_code >= 500:
+                    time.sleep(1)
+                    return self._generate_audio_chunk(chunk, chunk_index, voice_id, retry_count + 1)
+                return None
+            
+            audio_chunks = []
+            for chunk_data in response.iter_content(chunk_size=4096):
+                if chunk_data:
+                    if b"--ERROR:QUOTA_EXCEEDED--" in chunk_data:
+                        print(f"Error: Quota exceeded for chunk {chunk_index}")
+                        return None
+                    audio_chunks.append(chunk_data)
+            
+            audio_data = b''.join(audio_chunks)
+            
+            if not audio_data:
+                print(f"No audio data received for chunk {chunk_index}")
+                return None
+            
+            audio_array, sample_rate = self._decode_audio_stream(
+                audio_data, 
+                self.output_format["encoding"],
+                self.output_format["sample_rate"]
+            )
+            
+            if audio_array.ndim == 1:
+                audio_array = audio_array.reshape(-1, 1)
+            
+            return (audio_array, sample_rate, chunk_index)
+            
+        except Exception as e:
+            print(f"Error generating audio for chunk {chunk_index}: {e}")
+            # Retry once for connection errors
+            if retry_count == 0:
+                time.sleep(1)
+                return self._generate_audio_chunk(chunk, chunk_index, voice_id, retry_count + 1)
+            return None
+    
+    def _audio_playback_worker(self, total_chunks) -> None:
+        """
+        Worker thread that plays audio chunks in order.
+
+        Args:
+            total_chunks (int): Total number of audio chunks to play.
+        """
+        
+        audio_buffer = {}
+        next_chunk_index = 0
+        chunks_played = 0
+        
+        while chunks_played < total_chunks:
+            try:
+                # Get next audio chunk from queue
+                audio_data = self.audio_chunk_queue.get(timeout=10.0)
+                
+                if audio_data is None: 
+                    if chunks_played >= total_chunks:
+                        break
+                    else:
+                        continue  
+                
+                audio_array, sample_rate, chunk_index = audio_data
+                audio_buffer[chunk_index] = (audio_array, sample_rate)
+                
+                while next_chunk_index in audio_buffer:
+                    audio_array, sample_rate = audio_buffer.pop(next_chunk_index)
+                    print(f"Playing chunk {next_chunk_index + 1}/{total_chunks}")
+                    sd.play(audio_array, sample_rate)
+                    sd.wait()
+                    next_chunk_index += 1
+                    chunks_played += 1
+                
+            except queue.Empty:
+                print(f"Timeout waiting for chunk {next_chunk_index + 1}/{total_chunks}")
+                continue
+            except Exception as e:
+                print(f"Error in audio playback worker: {e}")
+                break
+        
+        print(f"✓ Finished playing all {chunks_played} chunks")
+    
+    def speak_chunks(self, text: str, voice_id: Optional[str] = None, speed: float = 1.0, max_chunk_size: int = 200) -> Optional[float]:
+        """
+        Convert text to speech in chunks with parallel processing for faster response time.
+        
+        Args:
+            text (str): Text to convert to speech
+            voice_id (str): Optional voice ID to use for synthesis
+            speed (float): Speed factor for speech synthesis (default is 1.0)
+            max_chunk_size (int): Maximum characters per chunk
+        
+        Returns:
+            Optional[float]: Total time taken to generate all speech chunks, or None if failed
+        """
+        
+        if not self.is_initialized:
+            print("TTS not initialized properly")
+            return None
+        
+        if not text or not isinstance(text, str):
+            print("Invalid text input")
+            return None
+        
+        chunks = self._split_text_into_chunks(text, max_chunk_size)
+        
+        if not chunks:
+            return None
+        
+        start_time = datetime.now()
+        
+        while not self.audio_chunk_queue.empty():
+            try:
+                self.audio_chunk_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        self.is_playing = True
+        playback_thread = threading.Thread(target=self._audio_playback_worker, args=(len(chunks),))
+        playback_thread.daemon = True
+        playback_thread.start()
+        
+        def generate_and_queue(chunk, index):
+            audio_data = self._generate_audio_chunk(chunk, index, voice_id)
+            if audio_data:
+                self.audio_chunk_queue.put(audio_data)
+        
+        # Limit to 5 concurrent requests since that is what async.ai allows for on the $1/hr plan
+        max_workers = min(5, len(chunks))  
+        print(f"Generating {len(chunks)} chunks with {max_workers} concurrent workers...")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for i, chunk in enumerate(chunks):
+                print(f"Queuing chunk {i+1}/{len(chunks)}: {chunk[:50]}...")
+                future = executor.submit(generate_and_queue, chunk, i)
+                futures.append(future)
+            
+            # Wait for all generation tasks to complete
+            for future in futures:
+                future.result()
+        
+        self.audio_chunk_queue.put(None)
+        self.is_playing = False
+        
+        playback_thread.join()
+        
+        total_time = (datetime.now() - start_time).total_seconds()
+        return total_time
+    
+    def audio_callback(self, indata: np.ndarray, frames: int, time: Any, status: sd.CallbackFlags) -> None:
         """
         Callback for audio recording.
+
+        Args:
+            indata (np.ndarray): Input audio data
+            frames (int): Number of frames in the input data
+            time (Any): Time information (not used)
+            status (sd.CallbackFlags): Status flags for the callback
         """
         
         if status:
             print(f"Audio callback status: {status}")
         self.audio_queue.put(bytes(indata))
     
-    def listen_for_speech(self, timeout: float = 10.0) -> Optional[str]:
+    def listen_for_speech(self, timeout: float = 30.0) -> Optional[str]:
         """
         Listen for speech and return the recognized text.
         
@@ -277,7 +529,7 @@ class HozieVoiceSynthesizer:
         
         recognized_text = ""
         silence_duration = 0
-        max_silence = 2.0  # Stop after 2 seconds of silence
+        max_silence = 3.0  # Stop after 3 seconds of silence
         start_time = datetime.now()
         
         try:
@@ -342,15 +594,13 @@ class HozieVoiceSynthesizer:
                     print("Didn't catch that. Please try again.")
                     continue
                 
-                # Check for exit commands
-                if any(word in user_input.lower() for word in ['goodbye', 'bye', 'exit', 'quit']):
+                if any(word in user_input.lower() for word in ['goodbye', 'bye', 'exit', 'quit', 'q']):
                     print("\nGoodbye!")
                     self.speak("Goodbye!")
                     break
 
                 print(f"\nProcessing: '{user_input}'")
 
-                # Get response from brain
                 start_time = datetime.now()
                 try:
                     response = self.session.answer(user_input)
@@ -360,10 +610,10 @@ class HozieVoiceSynthesizer:
                     print(f"Brain error: {e}")
                     response = "I'm sorry, I encountered an error processing that."
                 
-                # Speak the response
+                # replace these words that the tts model has a hard time saying
                 response = response.replace("haha", "").replace("Aight", "ight").replace("*", "").replace("ya", "yeuh")
                 print(f"\nSpeaking: {response}")
-                generation_time = self.speak(response)
+                generation_time = self.speak_chunks(response)
                 
                 if generation_time:
                     print(f"✓ Speech generated in {generation_time:.2f}s")
